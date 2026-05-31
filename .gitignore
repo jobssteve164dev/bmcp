@@ -6,4 +6,5 @@ node_modules/
 .market-install/
 .market-release-test/
 .market-v004-test/
+.native-test/
 .DS_Store

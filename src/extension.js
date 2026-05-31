@@ -1,7 +1,9 @@
 const http = require('http');
+const { execFile } = require('child_process');
 const vscode = require('vscode');
 
 const DEFAULT_PORT = 17333;
+const NATIVE_SESSION = 'bmcp-native';
 const pending = new Map();
 
 let panel;
@@ -61,19 +63,19 @@ function startServer(context) {
         return sendJson(res, 200, { ok: true, result });
       }
       if (req.url === '/snapshot') {
-        return sendJson(res, 200, { ok: true, snapshot: await requestWebview('snapshot') });
+        return sendJson(res, 200, { ok: true, snapshot: await browserAction('snapshot') });
       }
       if (req.url === '/click') {
-        return sendJson(res, 200, { ok: true, result: await requestWebview('click', { ref: body.ref }) });
+        return sendJson(res, 200, { ok: true, result: await browserAction('click', { ref: body.ref }) });
       }
       if (req.url === '/type') {
         return sendJson(res, 200, {
           ok: true,
-          result: await requestWebview('type', { ref: body.ref, text: body.text || '' })
+          result: await browserAction('type', { ref: body.ref, text: body.text || '' })
         });
       }
       if (req.url === '/read') {
-        return sendJson(res, 200, { ok: true, result: await requestWebview('read') });
+        return sendJson(res, 200, { ok: true, result: await browserAction('read') });
       }
       if (req.url === '/demo') {
         return sendJson(res, 200, { ok: true, result: await runDemo() });
@@ -98,6 +100,9 @@ function startServer(context) {
 
 async function openBrowser(url) {
   currentState = normalizeTarget(url);
+  if (currentState.mode === 'native') {
+    await runAgentBrowser(['open', currentState.url], 30000);
+  }
   ensurePanel();
   panel.reveal(vscode.ViewColumn.Beside);
   panel.webview.html = getHtml(currentState);
@@ -154,6 +159,79 @@ function requestWebview(action, payload = {}) {
   });
 }
 
+async function browserAction(action, payload = {}) {
+  if (currentState.mode !== 'native') {
+    return requestWebview(action, payload);
+  }
+
+  if (action === 'snapshot') {
+    const raw = await runAgentBrowser(['snapshot', '-i'], 30000);
+    return parseAgentBrowserSnapshot(raw);
+  }
+  if (action === 'read') {
+    const raw = await runAgentBrowser(['snapshot', '-i'], 30000);
+    return { text: raw };
+  }
+  if (action === 'click') {
+    const ref = normalizeAgentBrowserRef(payload.ref);
+    const raw = await runAgentBrowser(['click', ref], 30000);
+    return { clicked: ref, raw };
+  }
+  if (action === 'type') {
+    const ref = normalizeAgentBrowserRef(payload.ref);
+    const raw = await runAgentBrowser(['fill', ref, payload.text || ''], 30000);
+    return { typed: ref, text: payload.text || '', raw };
+  }
+
+  throw new Error(`Unsupported native browser action: ${action}`);
+}
+
+function runAgentBrowser(args, timeout = 15000) {
+  return new Promise((resolve, reject) => {
+    execFile('agent-browser', ['--session-name', NATIVE_SESSION, ...args], { timeout }, (error, stdout, stderr) => {
+      if (error) {
+        const detail = [stderr, stdout].filter(Boolean).join('\n').trim();
+        reject(new Error(detail || error.message));
+        return;
+      }
+      resolve(stdout.trim());
+    });
+  });
+}
+
+function normalizeAgentBrowserRef(ref) {
+  if (!ref) throw new Error('Missing element ref.');
+  const value = String(ref);
+  return value.startsWith('@') ? value : `@${value.replace(/^e/, 'e')}`;
+}
+
+function parseAgentBrowserSnapshot(raw) {
+  const elements = raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.includes('[ref=e'))
+    .map((line) => {
+      const refMatch = line.match(/ref=(e\d+)/);
+      const roleMatch = line.match(/^-+\s*([a-zA-Z]+)\s+/);
+      const labelMatch = line.match(/"([^"]+)"/);
+      return {
+        ref: refMatch ? refMatch[1] : '',
+        role: roleMatch ? roleMatch[1] : '',
+        label: labelMatch ? labelMatch[1] : '',
+        raw: line
+      };
+    })
+    .filter((item) => item.ref);
+
+  return {
+    title: '',
+    url: currentState.url,
+    text: raw,
+    raw,
+    elements
+  };
+}
+
 async function runDemo() {
   await openBrowser('bmcp:demo');
   let snapshot = await requestWebview('snapshot');
@@ -185,34 +263,42 @@ function normalizeTarget(url) {
   if (!url || url === 'bmcp:demo') {
     return { mode: 'demo', url: 'bmcp:demo' };
   }
-  return { mode: 'external', url };
+  return { mode: 'native', url };
 }
 
 function getHtml(state) {
-  if (state.mode === 'external') {
-    return getExternalHtml(state.url);
+  if (state.mode === 'native') {
+    return getNativeHtml(state.url);
   }
   return getDemoHtml();
 }
 
-function getExternalHtml(url) {
+function getNativeHtml(url) {
   const safeUrl = escapeHtml(url);
   return `<!doctype html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src http: https:; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
   <style>
     html, body { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background: #101114; color: #f6f6f6; }
-    .bar { height: 42px; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: #191b20; border-bottom: 1px solid #30343d; }
-    .dot { width: 8px; height: 8px; border-radius: 99px; background: #33d17a; }
-    iframe { width: 100%; height: calc(100% - 43px); border: 0; background: white; }
+    main { min-height: 100%; display: grid; place-items: center; padding: 28px; }
+    section { width: min(680px, 100%); border: 1px solid #30343d; border-radius: 8px; padding: 22px; background: #191b20; }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    p { margin: 8px 0; color: #c7cfdd; line-height: 1.5; }
+    code { color: #9cdcfe; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 99px; background: #33d17a; margin-right: 8px; }
   </style>
 </head>
 <body>
-  <div class="bar"><span class="dot"></span><strong>BMCP Browser</strong><span>${safeUrl}</span></div>
-  <iframe src="${safeUrl}" title="BMCP Browser"></iframe>
-  <script>${webviewRuntime()}</script>
+  <main>
+    <section>
+      <h1><span class="dot"></span>BMCP Native Browser</h1>
+      <p>BMCP opened this site in a real local browser session:</p>
+      <p><code>${safeUrl}</code></p>
+      <p>Local agent CLIs can now use BMCP's HTTP bridge for structured snapshots, typing, clicking, and reading page state.</p>
+    </section>
+  </main>
 </body>
 </html>`;
 }
