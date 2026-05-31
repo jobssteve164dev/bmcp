@@ -3,6 +3,8 @@
 .solopreneur/**
 .local-test/**
 .market-test/**
+.market-install/**
+.market-release-test/**
 node_modules/**
 test/**
 *.vsix

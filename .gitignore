@@ -3,4 +3,6 @@ node_modules/
 .env
 .local-test/
 .market-test/
+.market-install/
+.market-release-test/
 .DS_Store
