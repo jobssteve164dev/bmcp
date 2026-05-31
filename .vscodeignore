@@ -5,6 +5,7 @@
 .market-test/**
 .market-install/**
 .market-release-test/**
+.market-v004-test/**
 node_modules/**
 test/**
 *.vsix
