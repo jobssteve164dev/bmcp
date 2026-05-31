@@ -12,6 +12,7 @@ let server;
 let nativeSocket;
 let nativeResizeTimer;
 let nativeViewport = { width: 1280, height: 720 };
+let nativeInputQueue = Promise.resolve();
 let currentState = {
   mode: 'demo',
   url: 'bmcp:demo'
@@ -190,8 +191,65 @@ function startNativeStreamRelay(streamUrl) {
 }
 
 function sendNativeInput(input) {
-  if (!nativeSocket || nativeSocket.readyState !== WebSocket.OPEN || !input) return;
-  nativeSocket.send(JSON.stringify(input));
+  if (!input) return;
+  if (nativeSocket && nativeSocket.readyState === WebSocket.OPEN) {
+    nativeSocket.send(JSON.stringify(input));
+    return;
+  }
+  nativeInputQueue = nativeInputQueue.then(() => runNativeInput(input)).catch((error) => {
+    panel?.webview.postMessage({ type: 'nativeStatus', text: error.message || '输入失败', connected: false });
+  });
+}
+
+async function runNativeInput(input) {
+  if (input.type === 'input_mouse') {
+    const x = String(clampInteger(input.x, 0, 3000));
+    const y = String(clampInteger(input.y, 0, 2200));
+    const button = ['left', 'right', 'middle'].includes(input.button) ? input.button : 'left';
+    if (input.eventType === 'mouseMoved') return;
+    if (input.eventType === 'mousePressed') {
+      await runAgentBrowser(['mouse', 'move', x, y], 5000);
+      await runAgentBrowser(['mouse', 'down', button], 5000);
+      return;
+    }
+    if (input.eventType === 'mouseReleased') {
+      await runAgentBrowser(['mouse', 'move', x, y], 5000);
+      await runAgentBrowser(['mouse', 'up', button], 5000);
+      return;
+    }
+    if (input.eventType === 'mouseWheel') {
+      await runAgentBrowser(['mouse', 'move', x, y], 5000);
+      await runAgentBrowser(['mouse', 'wheel', String(Math.round(Number(input.deltaY) || 0)), String(Math.round(Number(input.deltaX) || 0))], 5000);
+    }
+    return;
+  }
+
+  if (input.type === 'input_keyboard') {
+    if (input.eventType !== 'keyDown') return;
+    if (input.key && input.key.length === 1) {
+      await runAgentBrowser(['keyboard', 'type', input.key], 5000);
+      return;
+    }
+    if (input.key) {
+      await runAgentBrowser(['press', normalizeKey(input.key)], 5000);
+    }
+  }
+}
+
+function normalizeKey(key) {
+  const aliases = {
+    ' ': 'Space',
+    ArrowLeft: 'ArrowLeft',
+    ArrowRight: 'ArrowRight',
+    ArrowUp: 'ArrowUp',
+    ArrowDown: 'ArrowDown',
+    Backspace: 'Backspace',
+    Delete: 'Delete',
+    Enter: 'Enter',
+    Escape: 'Escape',
+    Tab: 'Tab'
+  };
+  return aliases[key] || key;
 }
 
 function scheduleNativeViewport(width, height) {
