@@ -3,7 +3,7 @@
   "displayName": "BMCP",
   "description": "A visible VS Code browser scaffold for local agent CLIs.",
   "version": "0.0.4",
-  "publisher": "solomap",
+  "publisher": "SZLK",
   "license": "MIT",
   "private": false,
   "engines": {
