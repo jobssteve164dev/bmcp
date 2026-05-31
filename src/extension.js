@@ -1,6 +1,7 @@
 const http = require('http');
 const { execFile } = require('child_process');
 const vscode = require('vscode');
+const WebSocket = require('ws');
 
 const DEFAULT_PORT = 17333;
 const NATIVE_SESSION = 'bmcp-native';
@@ -8,6 +9,7 @@ const pending = new Map();
 
 let panel;
 let server;
+let nativeSocket;
 let currentState = {
   mode: 'demo',
   url: 'bmcp:demo'
@@ -36,6 +38,7 @@ function deactivate() {
     server.close();
     server = undefined;
   }
+  closeNativeStream();
 }
 
 function startServer(context) {
@@ -107,6 +110,9 @@ async function openBrowser(url) {
   ensurePanel();
   panel.reveal(vscode.ViewColumn.Beside);
   panel.webview.html = getHtml(currentState);
+  if (currentState.mode === 'native') {
+    startNativeStreamRelay(currentState.streamUrl);
+  }
   return currentState;
 }
 
@@ -119,6 +125,10 @@ function ensurePanel() {
   });
 
   panel.webview.onDidReceiveMessage((message) => {
+    if (message?.type === 'nativeInput') {
+      sendNativeInput(message.input);
+      return;
+    }
     if (!message || !message.id) return;
     const entry = pending.get(message.id);
     if (!entry) return;
@@ -132,6 +142,7 @@ function ensurePanel() {
 
   panel.onDidDispose(() => {
     panel = undefined;
+    closeNativeStream();
     for (const entry of pending.values()) {
       entry.reject(new Error('BMCP browser panel was closed.'));
     }
@@ -139,6 +150,48 @@ function ensurePanel() {
   });
 
   return panel;
+}
+
+function startNativeStreamRelay(streamUrl) {
+  closeNativeStream();
+  if (!streamUrl || !panel) return;
+
+  nativeSocket = new WebSocket(streamUrl);
+  nativeSocket.on('open', () => {
+    panel?.webview.postMessage({ type: 'nativeStatus', text: '已连接', connected: true });
+  });
+  nativeSocket.on('message', (data) => {
+    let message;
+    try {
+      message = JSON.parse(String(data));
+    } catch (_) {
+      return;
+    }
+    if (message.type === 'frame' && message.data) {
+      panel?.webview.postMessage({
+        type: 'nativeFrame',
+        data: message.data,
+        metadata: message.metadata || {}
+      });
+    }
+  });
+  nativeSocket.on('close', () => {
+    panel?.webview.postMessage({ type: 'nativeStatus', text: '已断开', connected: false });
+  });
+  nativeSocket.on('error', (error) => {
+    panel?.webview.postMessage({ type: 'nativeStatus', text: error.message || '连接异常', connected: false });
+  });
+}
+
+function sendNativeInput(input) {
+  if (!nativeSocket || nativeSocket.readyState !== WebSocket.OPEN || !input) return;
+  nativeSocket.send(JSON.stringify(input));
+}
+
+function closeNativeStream() {
+  if (!nativeSocket) return;
+  nativeSocket.close();
+  nativeSocket = undefined;
 }
 
 function requestWebview(action, payload = {}) {
@@ -304,12 +357,11 @@ function getHtml(state) {
 
 function getNativeHtml(state) {
   const safeUrl = escapeHtml(state.url);
-  const safeStreamUrl = JSON.stringify(state.streamUrl || '');
   return `<!doctype html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; connect-src ws://127.0.0.1:* ws://localhost:*;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;">
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background: #111318; color: #f6f7fb; }
@@ -338,13 +390,12 @@ function getNativeHtml(state) {
     </main>
   </div>
   <script>
-    const streamUrl = ${safeStreamUrl};
+    const vscode = acquireVsCodeApi();
     const frame = document.getElementById('frame');
     const viewport = document.getElementById('viewport');
     const status = document.getElementById('status');
     const statusText = document.getElementById('status-text');
     const empty = document.getElementById('empty');
-    let socket;
     let metadata = { deviceWidth: 1280, deviceHeight: 720 };
     let lastMove = 0;
 
@@ -353,38 +404,21 @@ function getNativeHtml(state) {
       status.classList.toggle('connected', Boolean(connected));
     }
 
-    function connect() {
-      if (!streamUrl) {
-        setStatus('未连接', false);
-        empty.textContent = '浏览器画面暂不可用';
-        return;
-      }
-      socket = new WebSocket(streamUrl);
-      socket.addEventListener('open', () => setStatus('已连接', true));
-      socket.addEventListener('close', () => {
-        setStatus('重连中', false);
-        setTimeout(connect, 1000);
-      });
-      socket.addEventListener('error', () => setStatus('连接异常', false));
-      socket.addEventListener('message', (event) => {
-        let message;
-        try {
-          message = JSON.parse(event.data);
-        } catch (_) {
-          return;
-        }
-        if (message.type === 'frame' && message.data) {
-          metadata = message.metadata || metadata;
-          frame.src = 'data:image/jpeg;base64,' + message.data;
-          empty.classList.add('hidden');
-        }
-      });
+    function send(message) {
+      vscode.postMessage({ type: 'nativeInput', input: message });
     }
 
-    function send(message) {
-      if (!socket || socket.readyState !== WebSocket.OPEN) return;
-      socket.send(JSON.stringify(message));
-    }
+    window.addEventListener('message', (event) => {
+      const message = event.data || {};
+      if (message.type === 'nativeStatus') {
+        setStatus(message.text || '连接中', message.connected);
+      }
+      if (message.type === 'nativeFrame' && message.data) {
+        metadata = message.metadata || metadata;
+        frame.src = 'data:image/jpeg;base64,' + message.data;
+        empty.classList.add('hidden');
+      }
+    });
 
     function toBrowserPoint(event) {
       const rect = frame.getBoundingClientRect();
@@ -438,8 +472,7 @@ function getNativeHtml(state) {
       event.preventDefault();
       send({ type: 'input_keyboard', eventType: 'keyUp', key: event.key, code: event.code });
     });
-
-    connect();
+    setStatus('连接中', false);
   </script>
 </body>
 </html>`;

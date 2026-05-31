@@ -54,7 +54,7 @@ jobs:
         run: git push --follow-tags
 
       - name: Publish to Visual Studio Marketplace
-        run: npx vsce publish --no-dependencies --allow-star-activation -p "$VSCE_PAT"
+        run: npx vsce publish --allow-star-activation -p "$VSCE_PAT"
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
