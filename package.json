@@ -1,0 +1,71 @@
+{
+  "name": "bmcp",
+  "displayName": "BMCP",
+  "description": "A visible VS Code browser scaffold for local agent CLIs.",
+  "version": "0.0.1",
+  "publisher": "solomap",
+  "license": "MIT",
+  "private": false,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "agent",
+    "browser",
+    "mcp",
+    "automation",
+    "vscode"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jobssteve164dev/bmcp.git"
+  },
+  "homepage": "https://github.com/jobssteve164dev/bmcp#readme",
+  "bugs": {
+    "url": "https://github.com/jobssteve164dev/bmcp/issues"
+  },
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "workspaceContains:package.json",
+    "onStartupFinished",
+    "onCommand:bmcp.openBrowser",
+    "onCommand:bmcp.runDemo"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "bmcp.openBrowser",
+        "title": "BMCP: Open Browser"
+      },
+      {
+        "command": "bmcp.runDemo",
+        "title": "BMCP: Run Demo"
+      }
+    ],
+    "configuration": {
+      "title": "BMCP",
+      "properties": {
+        "bmcp.port": {
+          "type": "number",
+          "default": 17333,
+          "description": "Local HTTP port used by local agent CLIs to control the visible BMCP browser."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node --check src/extension.js && node --check src/pageModel.js && node --check scripts/smoke-http.js",
+    "test": "node test/pageModel.test.js",
+    "package": "vsce package --no-dependencies",
+    "publish:marketplace": "vsce publish --no-dependencies -p $VSCE_PAT",
+    "smoke:http": "node scripts/smoke-http.js",
+    "verify": "npm run check && npm test && npm run package"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.2.2",
+    "jsdom": "^25.0.1"
+  }
+}

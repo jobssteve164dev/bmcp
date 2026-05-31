@@ -1,0 +1,12 @@
+.git/**
+.github/**
+.solopreneur/**
+.local-test/**
+node_modules/**
+test/**
+*.vsix
+.env
+.gitignore
+docs/product-brief.md
+docs/product-brief.zh.md
+docs/release.md

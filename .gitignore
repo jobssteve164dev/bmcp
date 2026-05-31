@@ -1,0 +1,5 @@
+node_modules/
+*.vsix
+.env
+.local-test/
+.DS_Store
