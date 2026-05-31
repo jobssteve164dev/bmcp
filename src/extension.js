@@ -3,7 +3,7 @@ const { execFile } = require('child_process');
 const vscode = require('vscode');
 
 const DEFAULT_PORT = 17333;
-const NATIVE_PROFILE = `${process.env.HOME || process.cwd()}/.bmcp-native-browser`;
+const NATIVE_SESSION = 'bmcp-native';
 const pending = new Map();
 
 let panel;
@@ -189,7 +189,7 @@ async function browserAction(action, payload = {}) {
 
 function runAgentBrowser(args, timeout = 15000) {
   return new Promise((resolve, reject) => {
-    execFile('agent-browser', ['--profile', NATIVE_PROFILE, ...args], { timeout }, (error, stdout, stderr) => {
+    execFile('agent-browser', ['--session-name', NATIVE_SESSION, ...args], { timeout }, (error, stdout, stderr) => {
       if (error) {
         const detail = [stderr, stdout].filter(Boolean).join('\n').trim();
         reject(new Error(detail || error.message));
