@@ -54,9 +54,15 @@ jobs:
         run: git push --follow-tags
 
       - name: Publish to Visual Studio Marketplace
-        run: npx vsce publish --no-dependencies -p "$VSCE_PAT"
+        run: npx vsce publish --no-dependencies --allow-star-activation -p "$VSCE_PAT"
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX
+        if: ${{ secrets.OVSX_PAT != '' }}
+        run: npx ovsx publish -p "$OVSX_PAT"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
 
       - name: Summary
         run: echo "Published BMCP v${{ steps.version.outputs.version }}"
