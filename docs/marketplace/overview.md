@@ -9,6 +9,7 @@ Use it when an agent running in the VS Code terminal needs to operate a page and
 - Visible browser panel inside VS Code.
 - Local HTTP bridge for existing agent CLIs.
 - Structured element snapshots with stable references.
+- Live external-site view backed by a real local browser session.
 - Working first-run demo with open, snapshot, type, click, and read-result.
 - Local-first workflow with no hosted browser service.
 
@@ -20,7 +21,7 @@ BMCP opens the browser panel, fills the demo sign-in form, clicks Sign in, and r
 
 ## Current Scope
 
-This first release proves the VS Code-visible browser loop and local agent bridge. External pages can be displayed when they allow embedding. Full arbitrary-site control will require the next browser-control layer and is not claimed by this release.
+This first release proves the VS Code-visible browser loop and local agent bridge. The local demo runs fully inside the extension, while external pages are opened through a real local browser session and mirrored into the BMCP panel so the user can watch and interact with the page.
 
 ## Safety Boundary
 

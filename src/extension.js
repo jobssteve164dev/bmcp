@@ -3,7 +3,7 @@ const { execFile } = require('child_process');
 const vscode = require('vscode');
 
 const DEFAULT_PORT = 17333;
-const NATIVE_SESSION = 'bmcp-native';
+const NATIVE_PROFILE = `${process.env.HOME || process.cwd()}/.bmcp-native-browser`;
 const pending = new Map();
 
 let panel;
@@ -39,7 +39,7 @@ function deactivate() {
 }
 
 function startServer(context) {
-  const port = vscode.workspace.getConfiguration('bmcp').get('port', DEFAULT_PORT);
+  const port = Number(process.env.BMCP_PORT) || vscode.workspace.getConfiguration('bmcp').get('port', DEFAULT_PORT);
 
   server = http.createServer(async (req, res) => {
     try {
@@ -102,6 +102,7 @@ async function openBrowser(url) {
   currentState = normalizeTarget(url);
   if (currentState.mode === 'native') {
     await runAgentBrowser(['open', currentState.url], 30000);
+    currentState.streamUrl = await ensureNativeStream();
   }
   ensurePanel();
   panel.reveal(vscode.ViewColumn.Beside);
@@ -188,7 +189,7 @@ async function browserAction(action, payload = {}) {
 
 function runAgentBrowser(args, timeout = 15000) {
   return new Promise((resolve, reject) => {
-    execFile('agent-browser', ['--session-name', NATIVE_SESSION, ...args], { timeout }, (error, stdout, stderr) => {
+    execFile('agent-browser', ['--profile', NATIVE_PROFILE, ...args], { timeout }, (error, stdout, stderr) => {
       if (error) {
         const detail = [stderr, stdout].filter(Boolean).join('\n').trim();
         reject(new Error(detail || error.message));
@@ -197,6 +198,34 @@ function runAgentBrowser(args, timeout = 15000) {
       resolve(stdout.trim());
     });
   });
+}
+
+async function ensureNativeStream() {
+  let output = '';
+  try {
+    output = await runAgentBrowser(['stream', 'status'], 10000);
+  } catch (_) {
+    output = await runAgentBrowser(['stream', 'enable'], 10000);
+  }
+
+  let streamUrl = extractStreamUrl(output);
+  if (!streamUrl) {
+    output = await runAgentBrowser(['stream', 'enable'], 10000);
+    streamUrl = extractStreamUrl(output);
+  }
+  if (!streamUrl) {
+    output = await runAgentBrowser(['stream', 'status'], 10000);
+    streamUrl = extractStreamUrl(output);
+  }
+  if (!streamUrl) {
+    throw new Error(`BMCP could not find the native browser stream URL. Output: ${output}`);
+  }
+  return streamUrl;
+}
+
+function extractStreamUrl(output) {
+  const match = String(output || '').match(/ws:\/\/(?:127\.0\.0\.1|localhost):\d+/);
+  return match ? match[0] : '';
 }
 
 function normalizeAgentBrowserRef(ref) {
@@ -268,37 +297,150 @@ function normalizeTarget(url) {
 
 function getHtml(state) {
   if (state.mode === 'native') {
-    return getNativeHtml(state.url);
+    return getNativeHtml(state);
   }
   return getDemoHtml();
 }
 
-function getNativeHtml(url) {
-  const safeUrl = escapeHtml(url);
+function getNativeHtml(state) {
+  const safeUrl = escapeHtml(state.url);
+  const safeStreamUrl = JSON.stringify(state.streamUrl || '');
   return `<!doctype html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; connect-src ws://127.0.0.1:* ws://localhost:*;">
   <style>
-    html, body { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background: #101114; color: #f6f6f6; }
-    main { min-height: 100%; display: grid; place-items: center; padding: 28px; }
-    section { width: min(680px, 100%); border: 1px solid #30343d; border-radius: 8px; padding: 22px; background: #191b20; }
-    h1 { margin: 0 0 10px; font-size: 20px; }
-    p { margin: 8px 0; color: #c7cfdd; line-height: 1.5; }
-    code { color: #9cdcfe; }
-    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 99px; background: #33d17a; margin-right: 8px; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background: #111318; color: #f6f7fb; }
+    body { overflow: hidden; }
+    .shell { height: 100vh; display: grid; grid-template-rows: 40px 1fr; }
+    header { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; padding: 0 12px; background: #191d24; border-bottom: 1px solid #2a303a; }
+    .address { min-width: 0; height: 26px; display: flex; align-items: center; padding: 0 9px; border: 1px solid #343b47; border-radius: 6px; background: #101318; color: #d7deea; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status { display: inline-flex; align-items: center; gap: 6px; color: #aab4c4; font-size: 12px; }
+    .dot { width: 7px; height: 7px; border-radius: 99px; background: #f5c451; }
+    .status.connected .dot { background: #33d17a; }
+    .viewport { min-height: 0; display: grid; place-items: center; background: #050608; outline: none; }
+    img { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none; cursor: default; }
+    .empty { position: absolute; inset: 40px 0 0; display: grid; place-items: center; color: #aab4c4; font-size: 13px; pointer-events: none; }
+    .empty.hidden { display: none; }
   </style>
 </head>
 <body>
-  <main>
-    <section>
-      <h1><span class="dot"></span>BMCP Native Browser</h1>
-      <p>BMCP opened this site in a real local browser session:</p>
-      <p><code>${safeUrl}</code></p>
-      <p>Local agent CLIs can now use BMCP's HTTP bridge for structured snapshots, typing, clicking, and reading page state.</p>
-    </section>
-  </main>
+  <div class="shell">
+    <header>
+      <div class="address" title="${safeUrl}">${safeUrl}</div>
+      <div id="status" class="status"><span class="dot"></span><span id="status-text">连接中</span></div>
+    </header>
+    <main id="viewport" class="viewport" tabindex="0" aria-label="Browser viewport">
+      <img id="frame" alt="" />
+      <div id="empty" class="empty">正在打开网页</div>
+    </main>
+  </div>
+  <script>
+    const streamUrl = ${safeStreamUrl};
+    const frame = document.getElementById('frame');
+    const viewport = document.getElementById('viewport');
+    const status = document.getElementById('status');
+    const statusText = document.getElementById('status-text');
+    const empty = document.getElementById('empty');
+    let socket;
+    let metadata = { deviceWidth: 1280, deviceHeight: 720 };
+    let lastMove = 0;
+
+    function setStatus(text, connected) {
+      statusText.textContent = text;
+      status.classList.toggle('connected', Boolean(connected));
+    }
+
+    function connect() {
+      if (!streamUrl) {
+        setStatus('未连接', false);
+        empty.textContent = '浏览器画面暂不可用';
+        return;
+      }
+      socket = new WebSocket(streamUrl);
+      socket.addEventListener('open', () => setStatus('已连接', true));
+      socket.addEventListener('close', () => {
+        setStatus('重连中', false);
+        setTimeout(connect, 1000);
+      });
+      socket.addEventListener('error', () => setStatus('连接异常', false));
+      socket.addEventListener('message', (event) => {
+        let message;
+        try {
+          message = JSON.parse(event.data);
+        } catch (_) {
+          return;
+        }
+        if (message.type === 'frame' && message.data) {
+          metadata = message.metadata || metadata;
+          frame.src = 'data:image/jpeg;base64,' + message.data;
+          empty.classList.add('hidden');
+        }
+      });
+    }
+
+    function send(message) {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      socket.send(JSON.stringify(message));
+    }
+
+    function toBrowserPoint(event) {
+      const rect = frame.getBoundingClientRect();
+      const naturalWidth = metadata.deviceWidth || frame.naturalWidth || rect.width;
+      const naturalHeight = metadata.deviceHeight || frame.naturalHeight || rect.height;
+      return {
+        x: Math.max(0, Math.round((event.clientX - rect.left) * naturalWidth / rect.width)),
+        y: Math.max(0, Math.round((event.clientY - rect.top) * naturalHeight / rect.height))
+      };
+    }
+
+    function mouseButton(event) {
+      if (event.button === 1) return 'middle';
+      if (event.button === 2) return 'right';
+      return 'left';
+    }
+
+    viewport.addEventListener('pointerdown', (event) => {
+      viewport.focus();
+      event.preventDefault();
+      const point = toBrowserPoint(event);
+      send({ type: 'input_mouse', eventType: 'mousePressed', x: point.x, y: point.y, button: mouseButton(event), clickCount: event.detail || 1 });
+    });
+    viewport.addEventListener('pointerup', (event) => {
+      event.preventDefault();
+      const point = toBrowserPoint(event);
+      send({ type: 'input_mouse', eventType: 'mouseReleased', x: point.x, y: point.y, button: mouseButton(event), clickCount: event.detail || 1 });
+    });
+    viewport.addEventListener('pointermove', (event) => {
+      const now = Date.now();
+      if (now - lastMove < 40) return;
+      lastMove = now;
+      const point = toBrowserPoint(event);
+      send({ type: 'input_mouse', eventType: 'mouseMoved', x: point.x, y: point.y, button: 'none', clickCount: 0 });
+    });
+    viewport.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      const point = toBrowserPoint(event);
+      send({ type: 'input_mouse', eventType: 'mouseWheel', x: point.x, y: point.y, button: 'none', clickCount: 0, deltaX: event.deltaX, deltaY: event.deltaY });
+    }, { passive: false });
+    viewport.addEventListener('keydown', (event) => {
+      event.preventDefault();
+      const payload = { type: 'input_keyboard', eventType: 'keyDown', key: event.key, code: event.code };
+      if (event.key && event.key.length === 1) {
+        payload.text = event.key;
+        payload.unmodifiedText = event.key;
+      }
+      send(payload);
+    });
+    viewport.addEventListener('keyup', (event) => {
+      event.preventDefault();
+      send({ type: 'input_keyboard', eventType: 'keyUp', key: event.key, code: event.code });
+    });
+
+    connect();
+  </script>
 </body>
 </html>`;
 }

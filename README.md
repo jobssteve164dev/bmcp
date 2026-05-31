@@ -14,9 +14,10 @@ It is not a new agent. It is a small VS Code extension that exposes a local HTTP
   - type username and password;
   - click sign in;
   - read the final page state.
-- Display external URLs in the BMCP panel when the site allows embedding.
+- Open external sites in a real local browser session and mirror the live page inside the `BMCP Browser` panel.
+- Let the user watch and interact with the same browser surface while the local agent CLI uses structured element snapshots and actions.
 
-The first release proves the product loop. Arbitrary external-site control is intentionally not claimed yet because many websites block iframe embedding and require a deeper browser-control layer.
+The first release proves the product loop with a visible browser surface and structured controls. BMCP is a scaffold for local agent CLIs; it does not replace the agent itself.
 
 ## Install
 
