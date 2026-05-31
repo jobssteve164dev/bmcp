@@ -10,6 +10,8 @@ const pending = new Map();
 let panel;
 let server;
 let nativeSocket;
+let nativeResizeTimer;
+let nativeViewport = { width: 1280, height: 720 };
 let currentState = {
   mode: 'demo',
   url: 'bmcp:demo'
@@ -129,6 +131,10 @@ function ensurePanel() {
       sendNativeInput(message.input);
       return;
     }
+    if (message?.type === 'nativeResize') {
+      scheduleNativeViewport(message.width, message.height);
+      return;
+    }
     if (!message || !message.id) return;
     const entry = pending.get(message.id);
     if (!entry) return;
@@ -188,7 +194,34 @@ function sendNativeInput(input) {
   nativeSocket.send(JSON.stringify(input));
 }
 
+function scheduleNativeViewport(width, height) {
+  const next = {
+    width: clampInteger(width, 320, 3000),
+    height: clampInteger(height, 240, 2200)
+  };
+  if (!next.width || !next.height) return;
+  if (next.width === nativeViewport.width && next.height === nativeViewport.height) return;
+  nativeViewport = next;
+
+  clearTimeout(nativeResizeTimer);
+  nativeResizeTimer = setTimeout(async () => {
+    try {
+      await runAgentBrowser(['set', 'viewport', String(nativeViewport.width), String(nativeViewport.height)], 10000);
+    } catch (error) {
+      panel?.webview.postMessage({ type: 'nativeStatus', text: error.message || '尺寸同步失败', connected: false });
+    }
+  }, 180);
+}
+
+function clampInteger(value, min, max) {
+  const number = Math.round(Number(value));
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(min, Math.min(max, number));
+}
+
 function closeNativeStream() {
+  clearTimeout(nativeResizeTimer);
+  nativeResizeTimer = undefined;
   if (!nativeSocket) return;
   nativeSocket.close();
   nativeSocket = undefined;
@@ -372,8 +405,8 @@ function getNativeHtml(state) {
     .status { display: inline-flex; align-items: center; gap: 6px; color: #aab4c4; font-size: 12px; }
     .dot { width: 7px; height: 7px; border-radius: 99px; background: #f5c451; }
     .status.connected .dot { background: #33d17a; }
-    .viewport { min-height: 0; display: grid; place-items: center; background: #050608; outline: none; }
-    img { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none; cursor: default; }
+    .viewport { position: relative; min-height: 0; background: #050608; outline: none; overflow: hidden; }
+    img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; -webkit-user-drag: none; cursor: default; }
     .empty { position: absolute; inset: 40px 0 0; display: grid; place-items: center; color: #aab4c4; font-size: 13px; pointer-events: none; }
     .empty.hidden { display: none; }
   </style>
@@ -398,6 +431,7 @@ function getNativeHtml(state) {
     const empty = document.getElementById('empty');
     let metadata = { deviceWidth: 1280, deviceHeight: 720 };
     let lastMove = 0;
+    let resizeTimer;
 
     function setStatus(text, connected) {
       statusText.textContent = text;
@@ -406,6 +440,18 @@ function getNativeHtml(state) {
 
     function send(message) {
       vscode.postMessage({ type: 'nativeInput', input: message });
+    }
+
+    function sendViewportSize() {
+      const rect = viewport.getBoundingClientRect();
+      const width = Math.max(320, Math.round(rect.width));
+      const height = Math.max(240, Math.round(rect.height));
+      vscode.postMessage({ type: 'nativeResize', width, height });
+    }
+
+    function scheduleViewportSize() {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(sendViewportSize, 80);
     }
 
     window.addEventListener('message', (event) => {
@@ -421,9 +467,9 @@ function getNativeHtml(state) {
     });
 
     function toBrowserPoint(event) {
-      const rect = frame.getBoundingClientRect();
-      const naturalWidth = metadata.deviceWidth || frame.naturalWidth || rect.width;
-      const naturalHeight = metadata.deviceHeight || frame.naturalHeight || rect.height;
+      const rect = viewport.getBoundingClientRect();
+      const naturalWidth = metadata.deviceWidth || rect.width;
+      const naturalHeight = metadata.deviceHeight || rect.height;
       return {
         x: Math.max(0, Math.round((event.clientX - rect.left) * naturalWidth / rect.width)),
         y: Math.max(0, Math.round((event.clientY - rect.top) * naturalHeight / rect.height))
@@ -472,6 +518,9 @@ function getNativeHtml(state) {
       event.preventDefault();
       send({ type: 'input_keyboard', eventType: 'keyUp', key: event.key, code: event.code });
     });
+    new ResizeObserver(scheduleViewportSize).observe(viewport);
+    window.addEventListener('resize', scheduleViewportSize);
+    scheduleViewportSize();
     setStatus('连接中', false);
   </script>
 </body>
