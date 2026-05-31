@@ -7,4 +7,5 @@ node_modules/
 .market-release-test/
 .market-v004-test/
 .native-test/
+.research/
 .DS_Store
