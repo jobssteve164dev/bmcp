@@ -1,6 +1,9 @@
 name: Release VS Code Extension
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       version:
@@ -16,12 +19,17 @@ env:
 
 jobs:
   publish:
+    # 仅在手动触发，或者 push 的提交信息包含 [release] 关键字时才执行发布
+    if: |
+      github.event_name == 'workflow_dispatch' || 
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[release]'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0 # 获取完整历史以正确计算 release notes 和 tags
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -43,15 +51,45 @@ jobs:
       - name: Bump version and tag
         id: version
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            npm version "${{ inputs.version }}" -m "chore: release v%s"
+          # 判定升级策略
+          BUMP_TYPE="patch"
+          COMMIT_MSG=""
+          
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ github.event.inputs.version }}" ]; then
+              BUMP_TYPE="${{ github.event.inputs.version }}"
+            fi
           else
-            npm version patch -m "chore: release v%s"
+            COMMIT_MSG="${{ github.event.head_commit.message }}"
+            if echo "$COMMIT_MSG" | grep -qiE '#major|\[major\]'; then
+              BUMP_TYPE="major"
+            elif echo "$COMMIT_MSG" | grep -qiE '#minor|\[minor\]'; then
+              BUMP_TYPE="minor"
+            fi
           fi
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          
+          echo "Bumping version using type: $BUMP_TYPE"
+          npm version "$BUMP_TYPE" -m "chore: release v%s [skip ci]"
+          
+          NEW_VER=$(node -p "require('./package.json').version")
+          echo "version=$NEW_VER" >> "$GITHUB_OUTPUT"
 
       - name: Push version commit and tag
-        run: git push --follow-tags
+        run: |
+          # 强行推送本地修改和 tag，使用 GITHUB_TOKEN 的授权
+          git push origin HEAD:main --follow-tags
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to Visual Studio Marketplace
         run: npx vsce publish --allow-star-activation -p "$VSCE_PAT"
@@ -64,4 +102,4 @@ jobs:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
 
       - name: Summary
-        run: echo "Published BMCP v${{ steps.version.outputs.version }}"
+        run: echo "Published BMCP v${{ steps.version.outputs.version }} and created GitHub Release"
