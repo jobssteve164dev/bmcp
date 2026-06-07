@@ -2,7 +2,7 @@
   "name": "bmcp",
   "displayName": "BMCP",
   "description": "A visible VS Code browser scaffold for local agent CLIs.",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "publisher": "SZLK",
   "license": "MIT",
   "private": false,
