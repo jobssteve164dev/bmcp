@@ -92,7 +92,7 @@
   },
   "scripts": {
     "check": "node --check src/extension.js && node --check src/pageModel.js && node --check scripts/smoke-http.js",
-    "test": "node test/pageModel.test.js",
+    "test": "node test/pageModel.test.js && node test/sidebarView.test.js",
     "package": "vsce package --allow-star-activation",
     "publish:marketplace": "vsce publish --allow-star-activation -p $VSCE_PAT",
     "smoke:http": "node scripts/smoke-http.js",

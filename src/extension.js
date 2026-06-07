@@ -12,6 +12,7 @@ let lastTargetHost = '';
 let actualPort = DEFAULT_PORT;
 
 let panel;
+let sidebarView;
 let server;
 let nativeSocket;
 let nativeResizeTimer;
@@ -136,16 +137,29 @@ function startServer(context) {
 async function openBrowser(url) {
   currentState = normalizeTarget(url);
   if (currentState.mode === 'native') {
-    await runAgentBrowser(['open', currentState.url], 30000);
-    currentState.streamUrl = await ensureNativeStream();
+    await openNativeSession(currentState.url);
   }
   ensurePanel();
   panel.reveal(vscode.ViewColumn.Beside);
   panel.webview.html = getHtml(currentState);
-  if (currentState.mode === 'native') {
-    startNativeStreamRelay(currentState.streamUrl);
-  }
   return currentState;
+}
+
+async function openNativeSession(targetUrl) {
+  currentState = { mode: 'native', url: targetUrl };
+  postNativeMessage({ type: 'nativeStatus', text: '正在打开', connected: false });
+  await runAgentBrowser(['open', targetUrl], 30000);
+  currentState.streamUrl = await ensureNativeStream();
+  startNativeStreamRelay(currentState.streamUrl);
+  return currentState;
+}
+
+async function navigateNative(command) {
+  if (!['back', 'forward', 'reload'].includes(command)) {
+    throw new Error(`Unsupported native navigation: ${command}`);
+  }
+  postNativeMessage({ type: 'nativeStatus', text: '正在更新', connected: Boolean(nativeSocket) });
+  await runAgentBrowser([command], 15000);
 }
 
 function ensurePanel() {
@@ -178,7 +192,9 @@ function ensurePanel() {
 
   panel.onDidDispose(() => {
     panel = undefined;
-    closeNativeStream();
+    if (!sidebarView) {
+      closeNativeStream();
+    }
     for (const entry of pending.values()) {
       entry.reject(new Error('BMCP browser panel was closed.'));
     }
@@ -190,11 +206,11 @@ function ensurePanel() {
 
 function startNativeStreamRelay(streamUrl) {
   closeNativeStream();
-  if (!streamUrl || !panel) return;
+  if (!streamUrl) return;
 
   nativeSocket = new WebSocket(streamUrl);
   nativeSocket.on('open', () => {
-    panel?.webview.postMessage({ type: 'nativeStatus', text: '已连接', connected: true });
+    postNativeMessage({ type: 'nativeStatus', text: '已连接', connected: true });
   });
   nativeSocket.on('message', (data) => {
     let message;
@@ -204,7 +220,7 @@ function startNativeStreamRelay(streamUrl) {
       return;
     }
     if (message.type === 'frame' && message.data) {
-      panel?.webview.postMessage({
+      postNativeMessage({
         type: 'nativeFrame',
         data: message.data,
         metadata: message.metadata || {}
@@ -212,10 +228,10 @@ function startNativeStreamRelay(streamUrl) {
     }
   });
   nativeSocket.on('close', () => {
-    panel?.webview.postMessage({ type: 'nativeStatus', text: '已断开', connected: false });
+    postNativeMessage({ type: 'nativeStatus', text: '已断开', connected: false });
   });
   nativeSocket.on('error', (error) => {
-    panel?.webview.postMessage({ type: 'nativeStatus', text: error.message || '连接异常', connected: false });
+    postNativeMessage({ type: 'nativeStatus', text: error.message || '连接异常', connected: false });
   });
 }
 
@@ -312,6 +328,11 @@ function closeNativeStream() {
   if (!nativeSocket) return;
   nativeSocket.close();
   nativeSocket = undefined;
+}
+
+function postNativeMessage(message) {
+  panel?.webview.postMessage(message);
+  sidebarView?.webview.postMessage(message);
 }
 
 function requestWebview(action, payload = {}) {
@@ -465,7 +486,14 @@ function normalizeTarget(url) {
   if (!url || url === 'bmcp:demo') {
     return { mode: 'demo', url: 'bmcp:demo' };
   }
-  return { mode: 'native', url };
+  return { mode: 'native', url: normalizeUrlInput(url) };
+}
+
+function normalizeUrlInput(value) {
+  const input = String(value || '').trim();
+  if (!input) return 'https://www.youtube.com';
+  if (/^https?:\/\//i.test(input)) return input;
+  return `https://${input}`;
 }
 
 function getHtml(state) {
@@ -991,25 +1019,58 @@ class BmcpWebviewViewProvider {
 
   resolveWebviewView(webviewView, context, _token) {
     this._view = webviewView;
+    sidebarView = webviewView;
 
     webviewView.webview.options = {
       enableScripts: true,
-      localResourceRoots: [this._extensionUri],
-      portMapping: [
-        { webviewPort: actualPort, extensionHostPort: actualPort }
-      ]
+      localResourceRoots: [this._extensionUri]
     };
 
-    webviewView.webview.html = this._getHtmlForWebview(actualPort);
+    webviewView.webview.onDidReceiveMessage(async (message) => {
+      try {
+        if (message?.type === 'openNative') {
+          await openNativeSession(normalizeUrlInput(message.url || 'https://www.youtube.com'));
+          return;
+        }
+        if (message?.type === 'nativeCommand') {
+          await navigateNative(message.command);
+          return;
+        }
+        if (message?.type === 'nativeInput') {
+          sendNativeInput(message.input);
+          return;
+        }
+        if (message?.type === 'nativeResize') {
+          scheduleNativeViewport(message.width, message.height);
+        }
+      } catch (error) {
+        webviewView.webview.postMessage({
+          type: 'nativeStatus',
+          text: error.message || '打开失败',
+          connected: false
+        });
+      }
+    });
+
+    webviewView.onDidDispose(() => {
+      sidebarView = undefined;
+      if (!panel) {
+        closeNativeStream();
+      }
+    });
+
+    webviewView.webview.html = this._getHtmlForWebview();
   }
 
-  _getHtmlForWebview(port) {
-    const defaultUrl = `http://localhost:${port}/proxy?url=${encodeURIComponent('https://www.youtube.com')}`;
-    
+  _getHtmlForWebview() {
+    const defaultUrl = 'https://www.youtube.com';
+    const defaultUrlJson = JSON.stringify(defaultUrl);
+
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     :root {
@@ -1047,6 +1108,27 @@ class BmcpWebviewViewProvider {
       -webkit-backdrop-filter: blur(8px);
       border-bottom: 1px solid var(--border-color);
       z-index: 10;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 52px;
+      justify-content: flex-end;
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 99px;
+      background: #f59e0b;
+    }
+
+    .status.connected .dot {
+      background: #22c55e;
     }
 
     .nav-btn {
@@ -1130,22 +1212,30 @@ class BmcpWebviewViewProvider {
       background: #000;
     }
 
-    iframe {
+    #frame {
+      position: absolute;
+      inset: 0;
       width: 100%;
       height: 100%;
-      border: none;
-      background: #fff;
+      object-fit: fill;
+      user-select: none;
+      -webkit-user-drag: none;
+      outline: none;
+      cursor: default;
     }
 
-    .loading-bar {
+    .empty {
       position: absolute;
-      top: 0;
-      left: 0;
-      height: 2px;
-      background: var(--primary-color);
-      width: 0;
-      transition: width 0.3s;
-      z-index: 100;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: var(--text-muted);
+      font-size: 12px;
+      pointer-events: none;
+    }
+
+    .empty.hidden {
+      display: none;
     }
   </style>
 </head>
@@ -1160,89 +1250,151 @@ class BmcpWebviewViewProvider {
     <button class="nav-btn" id="btn-refresh" title="刷新">
       <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
     </button>
-    <button class="nav-btn" id="btn-home" title="YouTube">
+    <button class="nav-btn" id="btn-home" title="首页">
       <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
     </button>
     
     <div class="address-bar">
-      <input type="text" class="address-input" id="url-input" placeholder="输入网址并回车..." value="https://www.youtube.com">
+      <input type="text" class="address-input" id="url-input" placeholder="输入网址并回车..." value="${escapeHtml(defaultUrl)}">
       <button class="go-btn" id="btn-go" title="前往">
         <svg viewBox="0 0 24 24"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg>
       </button>
     </div>
+    <div id="status" class="status"><span class="dot"></span><span id="status-text">就绪</span></div>
   </div>
 
-  <div class="web-container">
-    <div class="loading-bar" id="loading-bar"></div>
-    <iframe id="web-frame" src="\${defaultUrl}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+  <div class="web-container" id="viewport" tabindex="0" aria-label="Browser viewport">
+    <img id="frame" alt="" />
+    <div id="empty" class="empty">正在打开网页</div>
   </div>
 
   <script>
-    const iframe = document.getElementById('web-frame');
+    const vscode = acquireVsCodeApi();
+    const viewport = document.getElementById('viewport');
+    const frame = document.getElementById('frame');
+    const empty = document.getElementById('empty');
     const urlInput = document.getElementById('url-input');
     const btnGo = document.getElementById('btn-go');
     const btnBack = document.getElementById('btn-back');
     const btnForward = document.getElementById('btn-forward');
     const btnRefresh = document.getElementById('btn-refresh');
     const btnHome = document.getElementById('btn-home');
-    const loadingBar = document.getElementById('loading-bar');
-
-    const baseUrl = 'http://localhost:${port}/';
-
-    function getProxyUrl(targetUrl) {
-      if (!/^https?:\/\//i.test(targetUrl)) {
-        targetUrl = 'https://' + targetUrl;
-      }
-      return baseUrl + 'proxy?url=' + encodeURIComponent(targetUrl);
-    }
+    const status = document.getElementById('status');
+    const statusText = document.getElementById('status-text');
+    let metadata = { deviceWidth: 1280, deviceHeight: 720 };
+    let lastMove = 0;
+    let resizeTimer;
 
     function navigateTo(targetUrl) {
-      showLoading();
-      const proxyUrl = getProxyUrl(targetUrl);
-      iframe.src = proxyUrl;
+      setStatus('正在打开', false);
+      empty.classList.remove('hidden');
+      vscode.postMessage({ type: 'openNative', url: targetUrl });
     }
 
-    function showLoading() {
-      loadingBar.style.width = '40%';
+    function setStatus(text, connected) {
+      statusText.textContent = text;
+      status.classList.toggle('connected', Boolean(connected));
     }
 
-    function hideLoading() {
-      loadingBar.style.width = '100%';
-      setTimeout(() => {
-        loadingBar.style.width = '0';
-      }, 200);
+    function sendInput(message) {
+      vscode.postMessage({ type: 'nativeInput', input: message });
+    }
+
+    function sendViewportSize() {
+      const rect = viewport.getBoundingClientRect();
+      vscode.postMessage({
+        type: 'nativeResize',
+        width: Math.max(320, Math.round(rect.width)),
+        height: Math.max(240, Math.round(rect.height))
+      });
+    }
+
+    function scheduleViewportSize() {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(sendViewportSize, 80);
+    }
+
+    function toBrowserPoint(event) {
+      const rect = viewport.getBoundingClientRect();
+      const naturalWidth = metadata.deviceWidth || rect.width;
+      const naturalHeight = metadata.deviceHeight || rect.height;
+      return {
+        x: Math.max(0, Math.round((event.clientX - rect.left) * naturalWidth / rect.width)),
+        y: Math.max(0, Math.round((event.clientY - rect.top) * naturalHeight / rect.height))
+      };
+    }
+
+    function mouseButton(event) {
+      if (event.button === 1) return 'middle';
+      if (event.button === 2) return 'right';
+      return 'left';
     }
 
     btnGo.addEventListener('click', () => navigateTo(urlInput.value));
     urlInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') navigateTo(urlInput.value);
     });
-    btnBack.addEventListener('click', () => {
-      try { iframe.contentWindow.history.back(); } catch(e) {}
-    });
-    btnForward.addEventListener('click', () => {
-      try { iframe.contentWindow.history.forward(); } catch(e) {}
-    });
-    btnRefresh.addEventListener('click', () => {
-      showLoading();
-      iframe.contentWindow.location.reload();
-    });
+    btnBack.addEventListener('click', () => vscode.postMessage({ type: 'nativeCommand', command: 'back' }));
+    btnForward.addEventListener('click', () => vscode.postMessage({ type: 'nativeCommand', command: 'forward' }));
+    btnRefresh.addEventListener('click', () => vscode.postMessage({ type: 'nativeCommand', command: 'reload' }));
     btnHome.addEventListener('click', () => {
-      urlInput.value = 'https://www.youtube.com';
-      navigateTo('https://www.youtube.com');
+      urlInput.value = ${defaultUrlJson};
+      navigateTo(${defaultUrlJson});
     });
 
-    iframe.addEventListener('load', () => {
-      hideLoading();
-      try {
-        const currentLoc = iframe.contentWindow.location.href;
-        const urlParams = new URLSearchParams(new URL(currentLoc).search);
-        const realUrl = urlParams.get('url');
-        if (realUrl) {
-          urlInput.value = realUrl;
-        }
-      } catch (e) {}
+    viewport.addEventListener('pointerdown', (event) => {
+      viewport.focus();
+      event.preventDefault();
+      const point = toBrowserPoint(event);
+      sendInput({ type: 'input_mouse', eventType: 'mousePressed', x: point.x, y: point.y, button: mouseButton(event), clickCount: event.detail || 1 });
     });
+    viewport.addEventListener('pointerup', (event) => {
+      event.preventDefault();
+      const point = toBrowserPoint(event);
+      sendInput({ type: 'input_mouse', eventType: 'mouseReleased', x: point.x, y: point.y, button: mouseButton(event), clickCount: event.detail || 1 });
+    });
+    viewport.addEventListener('pointermove', (event) => {
+      const now = Date.now();
+      if (now - lastMove < 40) return;
+      lastMove = now;
+      const point = toBrowserPoint(event);
+      sendInput({ type: 'input_mouse', eventType: 'mouseMoved', x: point.x, y: point.y, button: 'none', clickCount: 0 });
+    });
+    viewport.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      const point = toBrowserPoint(event);
+      sendInput({ type: 'input_mouse', eventType: 'mouseWheel', x: point.x, y: point.y, button: 'none', clickCount: 0, deltaX: event.deltaX, deltaY: event.deltaY });
+    }, { passive: false });
+    viewport.addEventListener('keydown', (event) => {
+      event.preventDefault();
+      const payload = { type: 'input_keyboard', eventType: 'keyDown', key: event.key, code: event.code };
+      if (event.key && event.key.length === 1) {
+        payload.text = event.key;
+        payload.unmodifiedText = event.key;
+      }
+      sendInput(payload);
+    });
+    viewport.addEventListener('keyup', (event) => {
+      event.preventDefault();
+      sendInput({ type: 'input_keyboard', eventType: 'keyUp', key: event.key, code: event.code });
+    });
+
+    window.addEventListener('message', (event) => {
+      const message = event.data || {};
+      if (message.type === 'nativeStatus') {
+        setStatus(message.text || '就绪', message.connected);
+      }
+      if (message.type === 'nativeFrame' && message.data) {
+        metadata = message.metadata || metadata;
+        frame.src = 'data:image/jpeg;base64,' + message.data;
+        empty.classList.add('hidden');
+      }
+    });
+
+    new ResizeObserver(scheduleViewportSize).observe(viewport);
+    window.addEventListener('resize', scheduleViewportSize);
+    scheduleViewportSize();
+    navigateTo(${defaultUrlJson});
   </script>
 </body>
 </html>`;
@@ -1251,5 +1403,10 @@ class BmcpWebviewViewProvider {
 
 module.exports = {
   activate,
-  deactivate
+  deactivate,
+  __test: {
+    BmcpWebviewViewProvider,
+    normalizeTarget,
+    normalizeUrlInput
+  }
 };
