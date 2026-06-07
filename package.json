@@ -53,6 +53,24 @@
         "title": "BMCP: Run Demo"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "bmcp-explorer",
+          "title": "BMCP Browser",
+          "icon": "$(globe)"
+        }
+      ]
+    },
+    "views": {
+      "bmcp-explorer": [
+        {
+          "type": "webview",
+          "id": "bmcp.browserView",
+          "name": "BMCP Browser"
+        }
+      ]
+    },
     "configuration": {
       "title": "BMCP",
       "properties": {

@@ -1,4 +1,6 @@
 const http = require('http');
+const https = require('https');
+const url = require('url');
 const { execFile } = require('child_process');
 const vscode = require('vscode');
 const WebSocket = require('ws');
@@ -6,6 +8,7 @@ const WebSocket = require('ws');
 const DEFAULT_PORT = 17333;
 const NATIVE_SESSION = 'bmcp-native';
 const pending = new Map();
+let lastTargetHost = '';
 
 let panel;
 let server;
@@ -21,16 +24,22 @@ let currentState = {
 function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand('bmcp.openBrowser', async () => {
-      const url = await vscode.window.showInputBox({
+      const urlInput = await vscode.window.showInputBox({
         title: 'Open in BMCP',
         prompt: 'Enter a URL, or leave empty for the local demo page',
         value: 'bmcp:demo'
       });
-      await openBrowser(url || 'bmcp:demo');
+      await openBrowser(urlInput || 'bmcp:demo');
     }),
     vscode.commands.registerCommand('bmcp.runDemo', async () => {
       await runDemo();
     })
+  );
+
+  // 注册侧边栏 Webview View Provider
+  const provider = new BmcpWebviewViewProvider(context.extensionUri);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(BmcpWebviewViewProvider.viewType, provider)
   );
 
   startServer(context);
@@ -49,7 +58,10 @@ function startServer(context) {
 
   server = http.createServer(async (req, res) => {
     try {
-      if (req.method === 'GET' && req.url === '/health') {
+      const reqUrl = url.parse(req.url, true);
+      const pathname = reqUrl.pathname;
+
+      if (pathname === '/health' && req.method === 'GET') {
         return sendJson(res, 200, {
           ok: true,
           name: 'BMCP',
@@ -59,35 +71,39 @@ function startServer(context) {
         });
       }
 
-      if (req.method !== 'POST') {
-        return sendJson(res, 405, { ok: false, error: 'Use POST for browser actions.' });
+      const localPostRoutes = ['/open', '/snapshot', '/click', '/type', '/read', '/demo'];
+      if (localPostRoutes.includes(pathname)) {
+        if (req.method !== 'POST') {
+          return sendJson(res, 405, { ok: false, error: 'Use POST for local browser actions.' });
+        }
+
+        const body = await readJson(req);
+        if (pathname === '/open') {
+          const result = await openBrowser(body.url || 'bmcp:demo');
+          return sendJson(res, 200, { ok: true, result });
+        }
+        if (pathname === '/snapshot') {
+          return sendJson(res, 200, { ok: true, snapshot: await browserAction('snapshot') });
+        }
+        if (pathname === '/click') {
+          return sendJson(res, 200, { ok: true, result: await browserAction('click', { ref: body.ref }) });
+        }
+        if (pathname === '/type') {
+          return sendJson(res, 200, {
+            ok: true,
+            result: await browserAction('type', { ref: body.ref, text: body.text || '' })
+          });
+        }
+        if (pathname === '/read') {
+          return sendJson(res, 200, { ok: true, result: await browserAction('read') });
+        }
+        if (pathname === '/demo') {
+          return sendJson(res, 200, { ok: true, result: await runDemo() });
+        }
       }
 
-      const body = await readJson(req);
-      if (req.url === '/open') {
-        const result = await openBrowser(body.url || 'bmcp:demo');
-        return sendJson(res, 200, { ok: true, result });
-      }
-      if (req.url === '/snapshot') {
-        return sendJson(res, 200, { ok: true, snapshot: await browserAction('snapshot') });
-      }
-      if (req.url === '/click') {
-        return sendJson(res, 200, { ok: true, result: await browserAction('click', { ref: body.ref }) });
-      }
-      if (req.url === '/type') {
-        return sendJson(res, 200, {
-          ok: true,
-          result: await browserAction('type', { ref: body.ref, text: body.text || '' })
-        });
-      }
-      if (req.url === '/read') {
-        return sendJson(res, 200, { ok: true, result: await browserAction('read') });
-      }
-      if (req.url === '/demo') {
-        return sendJson(res, 200, { ok: true, result: await runDemo() });
-      }
-
-      return sendJson(res, 404, { ok: false, error: `Unknown endpoint: ${req.url}` });
+      // 非本地 API 均走全流量代理
+      return handleProxyRequest(req, res, port);
     } catch (error) {
       return sendJson(res, 500, { ok: false, error: error.message });
     }
@@ -792,6 +808,424 @@ function escapeHtml(value) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function handleProxyRequest(req, res, port) {
+  const reqUrl = url.parse(req.url, true);
+  let targetUrlStr = '';
+
+  if (reqUrl.pathname === '/proxy') {
+    targetUrlStr = reqUrl.query.url;
+  }
+
+  // 尝试补全相对路径
+  if (!targetUrlStr) {
+    const referer = req.headers['referer'];
+    if (referer) {
+      const refUrl = url.parse(referer, true);
+      if (refUrl.pathname === '/proxy' && refUrl.query.url) {
+        const refTarget = url.parse(refUrl.query.url);
+        targetUrlStr = refTarget.protocol + '//' + refTarget.host + req.url;
+      } else if (lastTargetHost) {
+        targetUrlStr = lastTargetHost + req.url;
+      }
+    } else if (lastTargetHost) {
+      targetUrlStr = lastTargetHost + req.url;
+    }
+  }
+
+  if (!targetUrlStr) {
+    res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Missing target URL parameters.');
+    return;
+  }
+
+  if (!/^https?:\/\//i.test(targetUrlStr)) {
+    targetUrlStr = 'https://' + targetUrlStr;
+  }
+
+  const parsedTarget = url.parse(targetUrlStr);
+  lastTargetHost = parsedTarget.protocol + '//' + parsedTarget.host;
+
+  const headers = { ...req.headers };
+  headers['host'] = parsedTarget.host;
+  delete headers['origin'];
+  delete headers['accept-encoding']; // 强制不使用压缩，便于修改网页内容并注入脚本
+
+  const client = parsedTarget.protocol === 'https:' ? https : http;
+
+  const proxyReq = client.request({
+    protocol: parsedTarget.protocol,
+    host: parsedTarget.hostname,
+    port: parsedTarget.port,
+    method: req.method,
+    path: parsedTarget.path,
+    headers: headers,
+    rejectUnauthorized: false
+  }, (proxyRes) => {
+    let status = proxyRes.statusCode;
+    const responseHeaders = { ...proxyRes.headers };
+
+    // 处理重定向
+    if (status === 301 || status === 302 || status === 307 || status === 308) {
+      let location = responseHeaders['location'];
+      if (location) {
+        if (!/^https?:\/\//i.test(location)) {
+          location = url.resolve(targetUrlStr, location);
+        }
+        responseHeaders['location'] = `http://127.0.0.1:${port}/proxy?url=` + encodeURIComponent(location);
+      }
+    }
+
+    // 剔除安全限制
+    delete responseHeaders['x-frame-options'];
+    delete responseHeaders['content-security-policy'];
+    delete responseHeaders['content-security-policy-report-only'];
+
+    // 允许跨域
+    responseHeaders['access-control-allow-origin'] = '*';
+    responseHeaders['access-control-allow-methods'] = '*';
+    responseHeaders['access-control-allow-headers'] = '*';
+
+    const contentType = responseHeaders['content-type'] || '';
+    if (contentType.includes('text/html')) {
+      let bodyChunks = [];
+      proxyRes.on('data', (chunk) => {
+        bodyChunks.push(chunk);
+      });
+      proxyRes.on('end', () => {
+        let bodyBuffer = Buffer.concat(bodyChunks);
+        let html = bodyBuffer.toString('utf8');
+
+        // 注入脚本劫持 API 与跳转
+        const injectScript = `<script>
+          (function() {
+            const originalFetch = window.fetch;
+            window.fetch = function(input, init) {
+              let url = typeof input === 'string' ? input : (input instanceof Request ? input.url : '');
+              if (url && !url.startsWith('http://127.0.0.1') && !url.startsWith('http://localhost')) {
+                const proxiedUrl = \`http://127.0.0.1:${port}/proxy?url=\${encodeURIComponent(url)}\`;
+                if (input instanceof Request) {
+                  input = new Request(proxiedUrl, input);
+                } else {
+                  input = proxiedUrl;
+                }
+              }
+              return originalFetch.call(this, input, init);
+            };
+
+            const originalOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url, ...args) {
+              if (url && typeof url === 'string' && !url.startsWith('http://127.0.0.1') && !url.startsWith('http://localhost')) {
+                url = \`http://127.0.0.1:${port}/proxy?url=\${encodeURIComponent(url)}\`;
+              }
+              return originalOpen.call(this, method, url, ...args);
+            };
+
+            document.addEventListener('click', function(e) {
+              const anchor = e.target.closest('a');
+              if (anchor && anchor.href) {
+                const href = anchor.href;
+                if (href.startsWith('http') && !href.startsWith('http://127.0.0.1') && !href.startsWith('http://localhost')) {
+                  e.preventDefault();
+                  window.location.href = \`http://127.0.0.1:${port}/proxy?url=\${encodeURIComponent(href)}\`;
+                }
+              }
+            }, true);
+          })();
+        </script>`;
+
+        if (html.includes('<head>')) {
+          html = html.replace('<head>', '<head>' + injectScript);
+        } else if (html.includes('<html>')) {
+          html = html.replace('<html>', '<html>' + injectScript);
+        } else {
+          html = injectScript + html;
+        }
+
+        const modifiedBuffer = Buffer.from(html, 'utf8');
+        responseHeaders['content-length'] = modifiedBuffer.length;
+
+        res.writeHead(status, responseHeaders);
+        res.end(modifiedBuffer);
+      });
+    } else {
+      res.writeHead(status, responseHeaders);
+      proxyRes.pipe(res);
+    }
+  });
+
+  proxyReq.on('error', (err) => {
+    res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Proxy Error: ' + err.message);
+  });
+
+  req.pipe(proxyReq);
+}
+
+class BmcpWebviewViewProvider {
+  static viewType = 'bmcp.browserView';
+
+  constructor(extensionUri) {
+    this._extensionUri = extensionUri;
+  }
+
+  resolveWebviewView(webviewView, context, _token) {
+    this._view = webviewView;
+
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this._extensionUri]
+    };
+
+    webviewView.webview.html = this._getHtmlForWebview();
+  }
+
+  _getHtmlForWebview() {
+    const port = Number(process.env.BMCP_PORT) || DEFAULT_PORT;
+    const defaultUrl = `http://127.0.0.1:\${port}/proxy?url=\${encodeURIComponent('https://www.youtube.com')}`;
+    
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --primary-color: #2563eb;
+      --bg-dark: #0f172a;
+      --bg-card: rgba(30, 41, 59, 0.7);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg-dark);
+      color: var(--text-main);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .nav-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      background: var(--bg-card);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border-color);
+      z-index: 10;
+    }
+
+    .nav-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .nav-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
+    }
+
+    .nav-btn svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+
+    .address-bar {
+      flex: 1;
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .address-input {
+      width: 100%;
+      height: 24px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 0 24px 0 8px;
+      font-size: 11px;
+      color: var(--text-main);
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .address-input:focus {
+      border-color: var(--primary-color);
+      background: rgba(15, 23, 42, 0.9);
+    }
+
+    .go-btn {
+      position: absolute;
+      right: 4px;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px;
+      border-radius: 3px;
+    }
+
+    .go-btn:hover {
+      color: var(--primary-color);
+    }
+
+    .go-btn svg {
+      width: 10px;
+      height: 10px;
+      fill: currentColor;
+    }
+
+    .web-container {
+      flex: 1;
+      width: 100%;
+      position: relative;
+      background: #000;
+    }
+
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      background: #fff;
+    }
+
+    .loading-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 2px;
+      background: var(--primary-color);
+      width: 0;
+      transition: width 0.3s;
+      z-index: 100;
+    }
+  </style>
+</head>
+<body>
+  <div class="nav-bar">
+    <button class="nav-btn" id="btn-back" title="后退">
+      <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+    </button>
+    <button class="nav-btn" id="btn-forward" title="前进">
+      <svg viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+    </button>
+    <button class="nav-btn" id="btn-refresh" title="刷新">
+      <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+    </button>
+    <button class="nav-btn" id="btn-home" title="YouTube">
+      <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+    </button>
+    
+    <div class="address-bar">
+      <input type="text" class="address-input" id="url-input" placeholder="输入网址并回车..." value="https://www.youtube.com">
+      <button class="go-btn" id="btn-go" title="前往">
+        <svg viewBox="0 0 24 24"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="web-container">
+    <div class="loading-bar" id="loading-bar"></div>
+    <iframe id="web-frame" src="\${defaultUrl}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+  </div>
+
+  <script>
+    const iframe = document.getElementById('web-frame');
+    const urlInput = document.getElementById('url-input');
+    const btnGo = document.getElementById('btn-go');
+    const btnBack = document.getElementById('btn-back');
+    const btnForward = document.getElementById('btn-forward');
+    const btnRefresh = document.getElementById('btn-refresh');
+    const btnHome = document.getElementById('btn-home');
+    const loadingBar = document.getElementById('loading-bar');
+
+    const port = \${port};
+
+    function getProxyUrl(targetUrl) {
+      if (!/^https?:\\/\\//i.test(targetUrl)) {
+        targetUrl = 'https://' + targetUrl;
+      }
+      return 'http://127.0.0.1:' + port + '/proxy?url=' + encodeURIComponent(targetUrl);
+    }
+
+    function navigateTo(targetUrl) {
+      showLoading();
+      const proxyUrl = getProxyUrl(targetUrl);
+      iframe.src = proxyUrl;
+    }
+
+    function showLoading() {
+      loadingBar.style.width = '40%';
+    }
+
+    function hideLoading() {
+      loadingBar.style.width = '100%';
+      setTimeout(() => {
+        loadingBar.style.width = '0';
+      }, 200);
+    }
+
+    btnGo.addEventListener('click', () => navigateTo(urlInput.value));
+    urlInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') navigateTo(urlInput.value);
+    });
+    btnBack.addEventListener('click', () => {
+      try { iframe.contentWindow.history.back(); } catch(e) {}
+    });
+    btnForward.addEventListener('click', () => {
+      try { iframe.contentWindow.history.forward(); } catch(e) {}
+    });
+    btnRefresh.addEventListener('click', () => {
+      showLoading();
+      iframe.contentWindow.location.reload();
+    });
+    btnHome.addEventListener('click', () => {
+      urlInput.value = 'https://www.youtube.com';
+      navigateTo('https://www.youtube.com');
+    });
+
+    iframe.addEventListener('load', () => {
+      hideLoading();
+      try {
+        const currentLoc = iframe.contentWindow.location.href;
+        const urlParams = new URLSearchParams(new URL(currentLoc).search);
+        const realUrl = urlParams.get('url');
+        if (realUrl) {
+          urlInput.value = realUrl;
+        }
+      } catch (e) {}
+    });
+  </script>
+</body>
+</html>`;
+  }
 }
 
 module.exports = {
