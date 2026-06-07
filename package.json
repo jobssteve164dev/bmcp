@@ -86,13 +86,18 @@
           "type": "number",
           "default": 17333,
           "description": "Local HTTP port used by local agent CLIs to control the visible BMCP browser."
+        },
+        "bmcp.browserPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to Chrome, Edge, or Chromium used by the low-latency BMCP browser runtime."
         }
       }
     }
   },
   "scripts": {
-    "check": "node --check src/extension.js && node --check src/pageModel.js && node --check scripts/smoke-http.js",
-    "test": "node test/pageModel.test.js && node test/sidebarView.test.js",
+    "check": "node --check src/extension.js && node --check src/browserRuntime.js && node --check src/pageModel.js && node --check scripts/smoke-http.js",
+    "test": "node test/pageModel.test.js && node test/sidebarView.test.js && node test/browserRuntime.test.js",
     "package": "vsce package --allow-star-activation",
     "publish:marketplace": "vsce publish --allow-star-activation -p $VSCE_PAT",
     "smoke:http": "node scripts/smoke-http.js",
@@ -103,6 +108,7 @@
     "jsdom": "^25.0.1"
   },
   "dependencies": {
+    "extract-zip": "^2.0.1",
     "ws": "^8.21.0"
   }
 }

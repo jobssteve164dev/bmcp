@@ -14,8 +14,8 @@ BMCP 专为本地 AI 代理（Agent CLI）设计，提供 VS Code 可视化浏�
 
 ### 🚀 Key Features
 
-1. **Fully Integrated Sidebar Browser (`BMCP Browser`)**  
-   An elegant, high-performance sidebar browser view that enables you to browse and stream modern, complex media websites (like YouTube or Bilibili) natively within VS Code with **zero latency**.
+1. **Low-Latency Sidebar Browser (`BMCP Browser`)**  
+   A visible browser view for modern websites such as YouTube and Bilibili. BMCP opens a managed local Chrome, Edge, or Chromium runtime and streams the page back into VS Code over WebRTC, with a built-in fallback for environments where capture is unavailable.
 
 2. **Native Port Tunneling (`portMapping`)**  
    Utilizes VS Code's official `portMapping` API to automatically establish a secure tunnel. Webviews and iframes can seamlessly communicate with the container backend using `localhost` with **zero-configuration**—fully compatible with Coder, `code-server`, GitHub Codespaces, and Remote SSH.
@@ -29,8 +29,8 @@ BMCP 专为本地 AI 代理（Agent CLI）设计，提供 VS Code 可视化浏�
    * `/snapshot` - Retrieve a structured accessibility tree and DOM snapshot (instead of raw screenshots).
    * `/click` / `/type` / `/read` - Execute human-like actions on elements via stable selectors.
 
-5. **CDP Viewport Screencast (Hybrid Mode)**  
-   Includes a secondary out-of-process Chrome mode powered by Puppeteer/Playwright. It streams viewport frames via WebSockets and forwards keyboard/mouse events back to the native Chrome instance for advanced headless automation.
+5. **Managed Browser Runtime + WebRTC Display**  
+   Uses the user's installed Chrome, Edge, or Chromium first, and lazily installs Chrome for Testing only when no compatible browser is found. WebRTC carries the visible page stream, while CDP is reserved for navigation, input, snapshots, and local Agent API control.
 
 ---
 
@@ -40,6 +40,8 @@ BMCP 专为本地 AI 代理（Agent CLI）设计，提供 VS Code 可视化浏�
 2. Open the Command Palette (`Ctrl+Shift+P` or `Cmd+Shift+P`).
 3. Run **`BMCP: Open Browser`** and enter a URL (e.g., `https://youtube.com`), or leave it empty to open the sidebar.
 4. Run **`BMCP: Run Demo`** to watch the automated sign-in demo flow on a local fixture page.
+
+Optional: set `bmcp.browserPath` if you want BMCP to use a specific Chrome, Edge, or Chromium executable.
 
 #### Controlling from Local Agent CLIs
 Once activated, local agent scripts can invoke control APIs via cURL:
@@ -62,8 +64,8 @@ curl -X POST http://127.0.0.1:17333/snapshot -d '{}'
 
 ### 🚀 核心特性
 
-1. **完全集成的侧边栏浏览器 (`BMCP Browser`)**  
-   专为 VS Code 侧边栏量身定制的高颜值、高性能浏览器视图。由于采用本地原生渲染技术，您可以在 VS Code 内部以**零延迟**流畅播放 YouTube、Bilibili 等现代化视频多媒体网站。
+1. **低延迟侧边栏浏览器 (`BMCP Browser`)**  
+   面向 YouTube、Bilibili 等现代网站的可见浏览器视图。BMCP 会优先使用本机已安装的 Chrome、Edge 或 Chromium，并通过 WebRTC 把页面低延迟显示在 VS Code 内；当前环境无法捕获时会自动切换备用显示。
 
 2. **官方原生端口隧道桥接 (`portMapping`)**  
    基于 VS Code 官方 `portMapping` 接口，自动在后台建立安全隧道。前端 Webview 能够无感地通过 `localhost` 访问容器内的代理服务端，**零配置**完美兼容 Coder、`code-server`、GitHub Codespaces 以及 Remote SSH 远程开发环境。
@@ -77,8 +79,8 @@ curl -X POST http://127.0.0.1:17333/snapshot -d '{}'
    * `/snapshot` - 获取结构化元素和 DOM 树快照（返回稳定元素引用，拒绝视觉猜测）。
    * `/click` / `/type` / `/read` - 根据元素引用执行点击、输入和内容读取。
 
-5. **CDP 画面流与键鼠转发（混合模式）**  
-   保留了通过 CDP 驱动的外部 Chrome 无头模式。支持通过 WebSocket 将外部 Chrome 的画面帧实时投影到 VS Code Webview 之中，并反向同步用户的键盘和鼠标动作。
+5. **托管浏览器运行时 + WebRTC 显示**  
+   优先复用用户本机浏览器；如果没有可用的 Chrome、Edge 或 Chromium，再按需安装 Chrome for Testing。WebRTC 负责可见页面显示，CDP 只负责导航、输入、快照和本地 Agent API 控制。
 
 ---
 
@@ -88,6 +90,8 @@ curl -X POST http://127.0.0.1:17333/snapshot -d '{}'
 2. 按下 `Ctrl+Shift+P`（或 `Cmd+Shift+P`）打开命令面板。
 3. 执行 **`BMCP: Open Browser`** 并输入您想访问的网址（如 `https://youtube.com`），或直接打开侧边栏。
 4. 执行 **`BMCP: Run Demo`** 体验在本地测试页面上自动输入账密并登录的演示流程。
+
+可选：如果希望指定浏览器，可在设置里填写 `bmcp.browserPath`，指向 Chrome、Edge 或 Chromium 可执行文件。
 
 #### 本地 AI 代理（Agent）调用示例
 插件激活后，本地 Agent 脚本可以直接通过 cURL 操控工作区浏览器：

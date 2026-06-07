@@ -4,12 +4,23 @@ const url = require('url');
 const { execFile } = require('child_process');
 const vscode = require('vscode');
 const WebSocket = require('ws');
+const {
+  closeBrowserRuntime,
+  ensureBrowserRuntime
+} = require('./browserRuntime');
 
 const DEFAULT_PORT = 17333;
 const NATIVE_SESSION = 'bmcp-native';
 const pending = new Map();
 let lastTargetHost = '';
 let actualPort = DEFAULT_PORT;
+let extensionContext;
+let runtimeSocket;
+let runtimeSocketServer;
+let serverReadyResolve;
+let serverReady = new Promise((resolve) => {
+  serverReadyResolve = resolve;
+});
 
 let panel;
 let sidebarView;
@@ -24,6 +35,7 @@ let currentState = {
 };
 
 function activate(context) {
+  extensionContext = context;
   context.subscriptions.push(
     vscode.commands.registerCommand('bmcp.openBrowser', async () => {
       const urlInput = await vscode.window.showInputBox({
@@ -52,7 +64,12 @@ function deactivate() {
     server.close();
     server = undefined;
   }
+  if (runtimeSocketServer) {
+    runtimeSocketServer.close();
+    runtimeSocketServer = undefined;
+  }
   closeNativeStream();
+  closeBrowserRuntime();
 }
 
 function startServer(context) {
@@ -111,10 +128,13 @@ function startServer(context) {
     }
   });
 
+  setupRuntimeSocketServer();
+
   let currentPort = preferredPort;
   function tryListen() {
     server.listen(currentPort, '127.0.0.1', () => {
       actualPort = currentPort;
+      serverReadyResolve?.();
       console.log(`BMCP listening on http://127.0.0.1:${actualPort}`);
     });
   }
@@ -134,6 +154,57 @@ function startServer(context) {
   context.subscriptions.push({ dispose: () => server?.close() });
 }
 
+function setupRuntimeSocketServer() {
+  runtimeSocketServer = new WebSocket.Server({ noServer: true });
+  runtimeSocketServer.on('connection', (socket) => {
+    runtimeSocket = socket;
+    postNativeMessage({ type: 'nativeStatus', text: '已连接', connected: true });
+    socket.on('message', (data) => {
+      let message;
+      try {
+        message = JSON.parse(String(data));
+      } catch (_) {
+        return;
+      }
+      if (message.type === 'runtime-ready') {
+        postNativeMessage({ type: 'runtimeReady' });
+        postNativeMessage({ type: 'nativeStatus', text: '已连接', connected: true });
+        return;
+      }
+      if (message.type === 'capture-ready') {
+        postNativeMessage({ type: 'nativeStatus', text: '低延迟连接已就绪', connected: true });
+        return;
+      }
+      if (message.type === 'capture-error') {
+        postNativeMessage({ type: 'webrtcFailed', error: message.error || 'Capture failed.' });
+        postNativeMessage({ type: 'nativeStatus', text: '已切换备用显示', connected: false });
+        startFallbackStream().catch((error) => {
+          postNativeMessage({ type: 'nativeStatus', text: error.message || '显示失败', connected: false });
+        });
+        return;
+      }
+      if (message.type === 'webrtcAnswer' || message.type === 'webrtcCandidate') {
+        postNativeMessage(message);
+      }
+    });
+    socket.on('close', () => {
+      if (runtimeSocket === socket) runtimeSocket = undefined;
+      postNativeMessage({ type: 'nativeStatus', text: '浏览器连接已断开', connected: false });
+    });
+  });
+
+  server.on('upgrade', (request, socket, head) => {
+    const pathname = url.parse(request.url).pathname;
+    if (pathname !== '/runtime') {
+      socket.destroy();
+      return;
+    }
+    runtimeSocketServer.handleUpgrade(request, socket, head, (ws) => {
+      runtimeSocketServer.emit('connection', ws, request);
+    });
+  });
+}
+
 async function openBrowser(url) {
   currentState = normalizeTarget(url);
   if (currentState.mode === 'native') {
@@ -148,9 +219,30 @@ async function openBrowser(url) {
 async function openNativeSession(targetUrl) {
   currentState = { mode: 'native', url: targetUrl };
   postNativeMessage({ type: 'nativeStatus', text: '正在打开', connected: false });
-  await runAgentBrowser(['open', targetUrl], 30000);
-  currentState.streamUrl = await ensureNativeStream();
-  startNativeStreamRelay(currentState.streamUrl);
+  await serverReady;
+  try {
+    const browserPath = vscode.workspace.getConfiguration('bmcp').get('browserPath', '');
+    const runtime = await ensureBrowserRuntime({
+      browserPath,
+      signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
+      storagePath: extensionContext.globalStorageUri.fsPath,
+      url: targetUrl
+    });
+    currentState = {
+      ...currentState,
+      browserPath: runtime.browserPath,
+      source: runtime.source,
+      transport: 'webrtc'
+    };
+    postNativeMessage({ type: 'nativeStatus', text: '正在连接低延迟显示', connected: true });
+    postNativeMessage({ type: 'startWebRtc' });
+  } catch (error) {
+    currentState = { ...currentState, transport: 'fallback', fallbackReason: error.message };
+    postNativeMessage({ type: 'nativeStatus', text: '已切换备用显示', connected: false });
+    await runAgentBrowser(['open', targetUrl], 30000);
+    currentState.streamUrl = await ensureNativeStream();
+    startNativeStreamRelay(currentState.streamUrl);
+  }
   return currentState;
 }
 
@@ -159,7 +251,25 @@ async function navigateNative(command) {
     throw new Error(`Unsupported native navigation: ${command}`);
   }
   postNativeMessage({ type: 'nativeStatus', text: '正在更新', connected: Boolean(nativeSocket) });
+  if (currentState.transport === 'webrtc') {
+    const runtime = await ensureBrowserRuntime({
+      browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
+      signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
+      storagePath: extensionContext.globalStorageUri.fsPath,
+      url: currentState.url
+    });
+    await runtime.cdp.command(command);
+    postNativeMessage({ type: 'startWebRtc' });
+    return;
+  }
   await runAgentBrowser([command], 15000);
+}
+
+async function startFallbackStream() {
+  await runAgentBrowser(['open', currentState.url], 30000);
+  currentState = { ...currentState, transport: 'fallback' };
+  currentState.streamUrl = await ensureNativeStream();
+  startNativeStreamRelay(currentState.streamUrl);
 }
 
 function ensurePanel() {
@@ -171,6 +281,10 @@ function ensurePanel() {
   });
 
   panel.webview.onDidReceiveMessage((message) => {
+    if (message?.type === 'webrtcOffer' || message?.type === 'webrtcCandidate') {
+      sendRuntimeMessage(message);
+      return;
+    }
     if (message?.type === 'nativeInput') {
       sendNativeInput(message.input);
       return;
@@ -237,6 +351,17 @@ function startNativeStreamRelay(streamUrl) {
 
 function sendNativeInput(input) {
   if (!input) return;
+  if (currentState.transport === 'webrtc') {
+    ensureBrowserRuntime({
+      browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
+      signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
+      storagePath: extensionContext.globalStorageUri.fsPath,
+      url: currentState.url
+    }).then((runtime) => runtime.cdp.dispatchInput(input)).catch((error) => {
+      postNativeMessage({ type: 'nativeStatus', text: error.message || '输入失败', connected: false });
+    });
+    return;
+  }
   if (nativeSocket && nativeSocket.readyState === WebSocket.OPEN) {
     nativeSocket.send(JSON.stringify(input));
     return;
@@ -309,9 +434,23 @@ function scheduleNativeViewport(width, height) {
   clearTimeout(nativeResizeTimer);
   nativeResizeTimer = setTimeout(async () => {
     try {
+      if (currentState.transport === 'webrtc') {
+        const runtime = await ensureBrowserRuntime({
+          browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
+          signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
+          storagePath: extensionContext.globalStorageUri.fsPath,
+          url: currentState.url
+        });
+        await runtime.cdp.setViewport(nativeViewport.width, nativeViewport.height);
+        postNativeMessage({
+          type: 'nativeViewport',
+          metadata: { deviceWidth: nativeViewport.width, deviceHeight: nativeViewport.height }
+        });
+        return;
+      }
       await runAgentBrowser(['set', 'viewport', String(nativeViewport.width), String(nativeViewport.height)], 10000);
     } catch (error) {
-      panel?.webview.postMessage({ type: 'nativeStatus', text: error.message || '尺寸同步失败', connected: false });
+      postNativeMessage({ type: 'nativeStatus', text: error.message || '尺寸同步失败', connected: false });
     }
   }, 180);
 }
@@ -333,6 +472,57 @@ function closeNativeStream() {
 function postNativeMessage(message) {
   panel?.webview.postMessage(message);
   sidebarView?.webview.postMessage(message);
+}
+
+function sendRuntimeMessage(message) {
+  if (message?.type === 'webrtcOffer' && currentState.transport === 'webrtc') {
+    startPageWebRtc(message.offer).catch((error) => {
+      if (runtimeSocket && runtimeSocket.readyState === WebSocket.OPEN) {
+        runtimeSocket.send(JSON.stringify(message));
+        return;
+      }
+      postNativeMessage({ type: 'webrtcFailed', error: error.message });
+      startFallbackStream().catch((fallbackError) => {
+        postNativeMessage({ type: 'nativeStatus', text: fallbackError.message || '显示失败', connected: false });
+      });
+    });
+    return;
+  }
+  if (message?.type === 'webrtcCandidate' && currentState.transport === 'webrtc') {
+    addPageWebRtcCandidate(message.candidate).catch(() => {
+      if (runtimeSocket && runtimeSocket.readyState === WebSocket.OPEN) {
+        runtimeSocket.send(JSON.stringify(message));
+      }
+    });
+    return;
+  }
+  if (!runtimeSocket || runtimeSocket.readyState !== WebSocket.OPEN) {
+    postNativeMessage({ type: 'nativeStatus', text: '正在等待浏览器连接', connected: false });
+    return;
+  }
+  runtimeSocket.send(JSON.stringify(message));
+}
+
+async function startPageWebRtc(offer) {
+  const runtime = await ensureBrowserRuntime({
+    browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
+    signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
+    storagePath: extensionContext.globalStorageUri.fsPath,
+    url: currentState.url
+  });
+  const result = await runtime.cdp.startPageWebRtc(offer);
+  postNativeMessage({ type: 'webrtcAnswer', answer: result.answer });
+  postNativeMessage({ type: 'nativeStatus', text: '低延迟连接已就绪', connected: true });
+}
+
+async function addPageWebRtcCandidate(candidate) {
+  const runtime = await ensureBrowserRuntime({
+    browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
+    signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
+    storagePath: extensionContext.globalStorageUri.fsPath,
+    url: currentState.url
+  });
+  await runtime.cdp.addPageWebRtcCandidate(candidate);
 }
 
 function requestWebview(action, payload = {}) {
@@ -357,6 +547,26 @@ function requestWebview(action, payload = {}) {
 async function browserAction(action, payload = {}) {
   if (currentState.mode !== 'native') {
     return requestWebview(action, payload);
+  }
+
+  if (currentState.transport === 'webrtc') {
+    const runtime = await ensureBrowserRuntime({
+      browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
+      signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
+      storagePath: extensionContext.globalStorageUri.fsPath,
+      url: currentState.url
+    });
+    if (action === 'snapshot' || action === 'read') {
+      const snapshot = await runtime.cdp.snapshot();
+      return action === 'read' ? { text: snapshot.text } : snapshot;
+    }
+    if (action === 'click') {
+      return runtime.cdp.click(payload.ref);
+    }
+    if (action === 'type') {
+      return runtime.cdp.type(payload.ref, payload.text || '');
+    }
+    throw new Error(`Unsupported WebRTC browser action: ${action}`);
   }
 
   if (action === 'snapshot') {
@@ -509,7 +719,7 @@ function getNativeHtml(state) {
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; media-src blob:;">
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background: #111318; color: #f6f7fb; }
@@ -521,7 +731,8 @@ function getNativeHtml(state) {
     .dot { width: 7px; height: 7px; border-radius: 99px; background: #f5c451; }
     .status.connected .dot { background: #33d17a; }
     .viewport { position: relative; min-height: 0; background: #050608; outline: none; overflow: hidden; }
-    img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; -webkit-user-drag: none; cursor: default; }
+    video, img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; user-select: none; -webkit-user-drag: none; cursor: default; }
+    .hidden { display: none; }
     .empty { position: absolute; inset: 40px 0 0; display: grid; place-items: center; color: #aab4c4; font-size: 13px; pointer-events: none; }
     .empty.hidden { display: none; }
   </style>
@@ -533,12 +744,14 @@ function getNativeHtml(state) {
       <div id="status" class="status"><span class="dot"></span><span id="status-text">连接中</span></div>
     </header>
     <main id="viewport" class="viewport" tabindex="0" aria-label="Browser viewport">
-      <img id="frame" alt="" />
+      <video id="stream" autoplay playsinline muted></video>
+      <img id="frame" class="hidden" alt="" />
       <div id="empty" class="empty">正在打开网页</div>
     </main>
   </div>
   <script>
     const vscode = acquireVsCodeApi();
+    const stream = document.getElementById('stream');
     const frame = document.getElementById('frame');
     const viewport = document.getElementById('viewport');
     const status = document.getElementById('status');
@@ -547,6 +760,7 @@ function getNativeHtml(state) {
     let metadata = { deviceWidth: 1280, deviceHeight: 720 };
     let lastMove = 0;
     let resizeTimer;
+    let peer;
 
     function setStatus(text, connected) {
       statusText.textContent = text;
@@ -574,12 +788,52 @@ function getNativeHtml(state) {
       if (message.type === 'nativeStatus') {
         setStatus(message.text || '连接中', message.connected);
       }
+      if (message.type === 'nativeViewport' && message.metadata) {
+        metadata = message.metadata;
+      }
+      if (message.type === 'startWebRtc') {
+        startWebRtc();
+      }
+      if (message.type === 'webrtcAnswer' && peer) {
+        peer.setRemoteDescription(message.answer).catch((error) => setStatus(error.message, false));
+      }
+      if (message.type === 'webrtcCandidate' && peer && message.candidate) {
+        peer.addIceCandidate(message.candidate).catch(() => {});
+      }
+      if (message.type === 'webrtcFailed') {
+        stream.classList.add('hidden');
+        frame.classList.remove('hidden');
+      }
       if (message.type === 'nativeFrame' && message.data) {
         metadata = message.metadata || metadata;
+        stream.classList.add('hidden');
+        frame.classList.remove('hidden');
         frame.src = 'data:image/jpeg;base64,' + message.data;
         empty.classList.add('hidden');
       }
     });
+
+    async function startWebRtc() {
+      if (peer) peer.close();
+      peer = new RTCPeerConnection({ iceServers: [] });
+      peer.ontrack = (event) => {
+        stream.srcObject = event.streams[0];
+        stream.classList.remove('hidden');
+        frame.classList.add('hidden');
+        empty.classList.add('hidden');
+        setStatus('低延迟连接已就绪', true);
+      };
+      peer.onicecandidate = (event) => {
+        if (event.candidate) {
+          vscode.postMessage({ type: 'webrtcCandidate', candidate: event.candidate });
+        }
+      };
+      peer.addTransceiver('video', { direction: 'recvonly' });
+      peer.addTransceiver('audio', { direction: 'recvonly' });
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      vscode.postMessage({ type: 'webrtcOffer', offer });
+    }
 
     function toBrowserPoint(event) {
       const rect = viewport.getBoundingClientRect();
@@ -647,7 +901,7 @@ function getDemoHtml() {
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; media-src blob:;">
   <style>
     :root { color-scheme: light; }
     * { box-sizing: border-box; }
@@ -1040,6 +1294,10 @@ class BmcpWebviewViewProvider {
           sendNativeInput(message.input);
           return;
         }
+        if (message?.type === 'webrtcOffer' || message?.type === 'webrtcCandidate') {
+          sendRuntimeMessage(message);
+          return;
+        }
         if (message?.type === 'nativeResize') {
           scheduleNativeViewport(message.width, message.height);
         }
@@ -1070,7 +1328,7 @@ class BmcpWebviewViewProvider {
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; media-src blob:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     :root {
@@ -1212,6 +1470,7 @@ class BmcpWebviewViewProvider {
       background: #000;
     }
 
+    #stream,
     #frame {
       position: absolute;
       inset: 0;
@@ -1222,6 +1481,10 @@ class BmcpWebviewViewProvider {
       -webkit-user-drag: none;
       outline: none;
       cursor: default;
+    }
+
+    .hidden {
+      display: none;
     }
 
     .empty {
@@ -1264,13 +1527,15 @@ class BmcpWebviewViewProvider {
   </div>
 
   <div class="web-container" id="viewport" tabindex="0" aria-label="Browser viewport">
-    <img id="frame" alt="" />
+    <video id="stream" autoplay playsinline muted></video>
+    <img id="frame" class="hidden" alt="" />
     <div id="empty" class="empty">正在打开网页</div>
   </div>
 
   <script>
     const vscode = acquireVsCodeApi();
     const viewport = document.getElementById('viewport');
+    const stream = document.getElementById('stream');
     const frame = document.getElementById('frame');
     const empty = document.getElementById('empty');
     const urlInput = document.getElementById('url-input');
@@ -1284,6 +1549,7 @@ class BmcpWebviewViewProvider {
     let metadata = { deviceWidth: 1280, deviceHeight: 720 };
     let lastMove = 0;
     let resizeTimer;
+    let peer;
 
     function navigateTo(targetUrl) {
       setStatus('正在打开', false);
@@ -1384,12 +1650,52 @@ class BmcpWebviewViewProvider {
       if (message.type === 'nativeStatus') {
         setStatus(message.text || '就绪', message.connected);
       }
+      if (message.type === 'nativeViewport' && message.metadata) {
+        metadata = message.metadata;
+      }
+      if (message.type === 'startWebRtc') {
+        startWebRtc();
+      }
+      if (message.type === 'webrtcAnswer' && peer) {
+        peer.setRemoteDescription(message.answer).catch((error) => setStatus(error.message, false));
+      }
+      if (message.type === 'webrtcCandidate' && peer && message.candidate) {
+        peer.addIceCandidate(message.candidate).catch(() => {});
+      }
+      if (message.type === 'webrtcFailed') {
+        stream.classList.add('hidden');
+        frame.classList.remove('hidden');
+      }
       if (message.type === 'nativeFrame' && message.data) {
         metadata = message.metadata || metadata;
+        stream.classList.add('hidden');
+        frame.classList.remove('hidden');
         frame.src = 'data:image/jpeg;base64,' + message.data;
         empty.classList.add('hidden');
       }
     });
+
+    async function startWebRtc() {
+      if (peer) peer.close();
+      peer = new RTCPeerConnection({ iceServers: [] });
+      peer.ontrack = (event) => {
+        stream.srcObject = event.streams[0];
+        stream.classList.remove('hidden');
+        frame.classList.add('hidden');
+        empty.classList.add('hidden');
+        setStatus('低延迟连接已就绪', true);
+      };
+      peer.onicecandidate = (event) => {
+        if (event.candidate) {
+          vscode.postMessage({ type: 'webrtcCandidate', candidate: event.candidate });
+        }
+      };
+      peer.addTransceiver('video', { direction: 'recvonly' });
+      peer.addTransceiver('audio', { direction: 'recvonly' });
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      vscode.postMessage({ type: 'webrtcOffer', offer });
+    }
 
     new ResizeObserver(scheduleViewportSize).observe(viewport);
     window.addEventListener('resize', scheduleViewportSize);
