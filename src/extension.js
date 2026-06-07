@@ -9,6 +9,7 @@ const DEFAULT_PORT = 17333;
 const NATIVE_SESSION = 'bmcp-native';
 const pending = new Map();
 let lastTargetHost = '';
+let actualPort = DEFAULT_PORT;
 
 let panel;
 let server;
@@ -54,7 +55,7 @@ function deactivate() {
 }
 
 function startServer(context) {
-  const port = Number(process.env.BMCP_PORT) || vscode.workspace.getConfiguration('bmcp').get('port', DEFAULT_PORT);
+  const preferredPort = Number(process.env.BMCP_PORT) || vscode.workspace.getConfiguration('bmcp').get('port', DEFAULT_PORT);
 
   server = http.createServer(async (req, res) => {
     try {
@@ -65,7 +66,7 @@ function startServer(context) {
         return sendJson(res, 200, {
           ok: true,
           name: 'BMCP',
-          port,
+          port: actualPort,
           panelVisible: Boolean(panel),
           current: currentState
         });
@@ -102,20 +103,32 @@ function startServer(context) {
         }
       }
 
-      // 非本地 API 均走全流量代理
-      return handleProxyRequest(req, res, port);
+      // 非本地 API 均走全流量代理，传入实际启动的 actualPort
+      return handleProxyRequest(req, res, actualPort);
     } catch (error) {
       return sendJson(res, 500, { ok: false, error: error.message });
     }
   });
 
-  server.listen(port, '127.0.0.1', () => {
-    console.log(`BMCP listening on http://127.0.0.1:${port}`);
-  });
+  let currentPort = preferredPort;
+  function tryListen() {
+    server.listen(currentPort, '127.0.0.1', () => {
+      actualPort = currentPort;
+      console.log(`BMCP listening on http://127.0.0.1:${actualPort}`);
+    });
+  }
 
   server.on('error', (error) => {
-    vscode.window.showErrorMessage(`BMCP could not start local port ${port}: ${error.message}`);
+    if (error.code === 'EADDRINUSE') {
+      console.log(`Port ${currentPort} in use, trying ${currentPort + 1}...`);
+      currentPort++;
+      tryListen();
+    } else {
+      vscode.window.showErrorMessage(`BMCP could not start local port ${currentPort}: ${error.message}`);
+    }
   });
+
+  tryListen();
 
   context.subscriptions.push({ dispose: () => server?.close() });
 }
@@ -982,8 +995,8 @@ class BmcpWebviewViewProvider {
   }
 
   _getHtmlForWebview() {
-    const port = Number(process.env.BMCP_PORT) || DEFAULT_PORT;
-    const defaultUrl = `http://127.0.0.1:\${port}/proxy?url=\${encodeURIComponent('https://www.youtube.com')}`;
+    const port = actualPort;
+    const defaultUrl = `http://127.0.0.1:${port}/proxy?url=${encodeURIComponent('https://www.youtube.com')}`;
     
     return `<!DOCTYPE html>
 <html lang="zh-CN">
