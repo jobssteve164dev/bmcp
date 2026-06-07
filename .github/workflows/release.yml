@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'src/**'
   workflow_dispatch:
     inputs:
       version:
@@ -19,10 +21,6 @@ env:
 
 jobs:
   publish:
-    # 无门槛发布，但需防止因自动版本推送 [skip ci] 导致的死循环
-    if: |
-      github.event_name == 'workflow_dispatch' || 
-      (github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
