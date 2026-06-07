@@ -4,12 +4,15 @@
   "description": "A visible VS Code browser scaffold for local agent CLIs.",
   "version": "0.0.14",
   "publisher": "SZLK",
+  "icon": "icon.png",
   "license": "MIT",
   "private": false,
   "engines": {
     "vscode": "^1.95.0"
   },
   "categories": [
+    "Testing",
+    "Visualization",
     "Other"
   ],
   "keywords": [
@@ -17,7 +20,12 @@
     "browser",
     "mcp",
     "automation",
-    "vscode"
+    "vscode",
+    "webview",
+    "screencast",
+    "mjpeg",
+    "playwright",
+    "puppeteer"
   ],
   "repository": {
     "type": "git",
