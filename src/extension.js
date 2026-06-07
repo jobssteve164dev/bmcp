@@ -879,14 +879,14 @@ function handleProxyRequest(req, res, port) {
     let status = proxyRes.statusCode;
     const responseHeaders = { ...proxyRes.headers };
 
-    // 处理重定向
+    // 处理重定向，使用相对于当前的相对路径，确保在 code-server / 端口隧道下保持路由
     if (status === 301 || status === 302 || status === 307 || status === 308) {
       let location = responseHeaders['location'];
       if (location) {
         if (!/^https?:\/\//i.test(location)) {
           location = url.resolve(targetUrlStr, location);
         }
-        responseHeaders['location'] = `http://127.0.0.1:${port}/proxy?url=` + encodeURIComponent(location);
+        responseHeaders['location'] = './proxy?url=' + encodeURIComponent(location);
       }
     }
 
@@ -910,14 +910,20 @@ function handleProxyRequest(req, res, port) {
         let bodyBuffer = Buffer.concat(bodyChunks);
         let html = bodyBuffer.toString('utf8');
 
-        // 注入脚本劫持 API 与跳转
+        // 1. 自动补全相对路径为绝对公网路径，消除静态资源加载跨域与 404
+        const targetOrigin = parsedTarget.protocol + '//' + parsedTarget.host;
+        html = html.replace(/(src|href|action)=["']\/(?!\/)/g, (match) => match.slice(0, -1) + targetOrigin + '/');
+
+        // 2. 注入脚本劫持 API 与跳转，利用 window.location 动态自适应解析宿主代理地址，解决 code-server 多端口跨域
         const injectScript = `<script>
           (function() {
+            const baseUrl = window.location.protocol + '//' + window.location.host + window.location.pathname.replace(/\\/proxy$/, '/');
+            
             const originalFetch = window.fetch;
             window.fetch = function(input, init) {
               let url = typeof input === 'string' ? input : (input instanceof Request ? input.url : '');
-              if (url && !url.startsWith('http://127.0.0.1') && !url.startsWith('http://localhost')) {
-                const proxiedUrl = \`http://127.0.0.1:${port}/proxy?url=\${encodeURIComponent(url)}\`;
+              if (url && !url.startsWith('http://127.0.0.1') && !url.startsWith('http://localhost') && !url.startsWith(baseUrl)) {
+                const proxiedUrl = baseUrl + 'proxy?url=' + encodeURIComponent(url);
                 if (input instanceof Request) {
                   input = new Request(proxiedUrl, input);
                 } else {
@@ -929,8 +935,8 @@ function handleProxyRequest(req, res, port) {
 
             const originalOpen = XMLHttpRequest.prototype.open;
             XMLHttpRequest.prototype.open = function(method, url, ...args) {
-              if (url && typeof url === 'string' && !url.startsWith('http://127.0.0.1') && !url.startsWith('http://localhost')) {
-                url = \`http://127.0.0.1:${port}/proxy?url=\${encodeURIComponent(url)}\`;
+              if (url && typeof url === 'string' && !url.startsWith('http://127.0.0.1') && !url.startsWith('http://localhost') && !url.startsWith(baseUrl)) {
+                url = baseUrl + 'proxy?url=' + encodeURIComponent(url);
               }
               return originalOpen.call(this, method, url, ...args);
             };
@@ -939,9 +945,9 @@ function handleProxyRequest(req, res, port) {
               const anchor = e.target.closest('a');
               if (anchor && anchor.href) {
                 const href = anchor.href;
-                if (href.startsWith('http') && !href.startsWith('http://127.0.0.1') && !href.startsWith('http://localhost')) {
+                if (href.startsWith('http') && !href.startsWith('http://127.0.0.1') && !href.startsWith('http://localhost') && !href.startsWith(baseUrl)) {
                   e.preventDefault();
-                  window.location.href = \`http://127.0.0.1:${port}/proxy?url=\${encodeURIComponent(href)}\`;
+                  window.location.href = baseUrl + 'proxy?url=' + encodeURIComponent(href);
                 }
               }
             }, true);
@@ -983,7 +989,7 @@ class BmcpWebviewViewProvider {
     this._extensionUri = extensionUri;
   }
 
-  resolveWebviewView(webviewView, context, _token) {
+  async resolveWebviewView(webviewView, context, _token) {
     this._view = webviewView;
 
     webviewView.webview.options = {
@@ -991,12 +997,24 @@ class BmcpWebviewViewProvider {
       localResourceRoots: [this._extensionUri]
     };
 
-    webviewView.webview.html = this._getHtmlForWebview();
+    const localUri = vscode.Uri.parse(`http://127.0.0.1:${actualPort}`);
+    let externalUrlStr = `http://127.0.0.1:${actualPort}/`;
+    try {
+      const externalUri = await vscode.env.asExternalUri(localUri);
+      externalUrlStr = externalUri.toString();
+    } catch (err) {
+      console.error('Failed to resolve external URI, falling back to localhost:', err);
+    }
+
+    if (!externalUrlStr.endsWith('/')) {
+      externalUrlStr += '/';
+    }
+
+    webviewView.webview.html = this._getHtmlForWebview(externalUrlStr);
   }
 
-  _getHtmlForWebview() {
-    const port = actualPort;
-    const defaultUrl = `http://127.0.0.1:${port}/proxy?url=${encodeURIComponent('https://www.youtube.com')}`;
+  _getHtmlForWebview(externalUrlStr) {
+    const defaultUrl = `${externalUrlStr}proxy?url=${encodeURIComponent('https://www.youtube.com')}`;
     
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1179,13 +1197,13 @@ class BmcpWebviewViewProvider {
     const btnHome = document.getElementById('btn-home');
     const loadingBar = document.getElementById('loading-bar');
 
-    const port = \${port};
+    const baseUrl = '${externalUrlStr}';
 
     function getProxyUrl(targetUrl) {
-      if (!/^https?:\\/\\//i.test(targetUrl)) {
+      if (!/^https?:\/\//i.test(targetUrl)) {
         targetUrl = 'https://' + targetUrl;
       }
-      return 'http://127.0.0.1:' + port + '/proxy?url=' + encodeURIComponent(targetUrl);
+      return baseUrl + 'proxy?url=' + encodeURIComponent(targetUrl);
     }
 
     function navigateTo(targetUrl) {
