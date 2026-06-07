@@ -44,8 +44,9 @@ The response includes structured element references such as `e1`, `e2`, and `e3`
 
 ## Commands
 
-- `BMCP: Open Browser`
-- `BMCP: Run Demo`
+- `BMCP: Open Browser` - Open a browser in a webview panel.
+- `BMCP: Run Demo` - Run the local automated login demo.
+- `BMCP Browser (Sidebar)` - A fully integrated sidebar view to browse websites (like YouTube) with zero latency via auto-port-tunneling and asset path adaptive patching.
 
 ## Safety Boundary
 
