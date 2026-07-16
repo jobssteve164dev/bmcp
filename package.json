@@ -1,8 +1,8 @@
 {
-  "name": "bmcp",
-  "displayName": "BMCP",
-  "description": "A visible VS Code browser scaffold for local agent CLIs.",
-  "version": "0.0.16",
+  "name": "solobrowser",
+  "displayName": "SoloBrowser",
+  "description": "A real, visible browser in VS Code for local AI agents and everyday web tasks.",
+  "version": "0.1.0",
   "publisher": "SZLK",
   "icon": "icon.png",
   "license": "MIT",
@@ -54,18 +54,18 @@
     "commands": [
       {
         "command": "bmcp.openBrowser",
-        "title": "BMCP: Open Browser"
+        "title": "SoloBrowser: Open Browser"
       },
       {
         "command": "bmcp.runDemo",
-        "title": "BMCP: Run Demo"
+        "title": "SoloBrowser: Run Demo"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
           "id": "bmcp-explorer",
-          "title": "BMCP Browser",
+          "title": "SoloBrowser",
           "icon": "$(globe)"
         }
       ]
@@ -75,22 +75,22 @@
         {
           "type": "webview",
           "id": "bmcp.browserView",
-          "name": "BMCP Browser"
+          "name": "SoloBrowser"
         }
       ]
     },
     "configuration": {
-      "title": "BMCP",
+      "title": "SoloBrowser",
       "properties": {
         "bmcp.port": {
           "type": "number",
           "default": 17333,
-          "description": "Local HTTP port used by local agent CLIs to control the visible BMCP browser."
+          "description": "Local HTTP port used by local AI agents to control SoloBrowser."
         },
         "bmcp.browserPath": {
           "type": "string",
           "default": "",
-          "description": "Optional path to Chrome, Edge, or Chromium used by the low-latency BMCP browser runtime."
+          "description": "Optional path to a stable Chrome, Edge, or Chromium installation used by SoloBrowser."
         }
       }
     }

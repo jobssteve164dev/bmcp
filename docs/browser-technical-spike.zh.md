@@ -1,10 +1,10 @@
-# VS Code 原生浏览器技术刺探
+# SoloBrowser：VS Code 可见浏览器技术决策
 
 日期：2026-05-31
 
 ## 结论
 
-2026-06-07 更新：后续调研确认，任意公网现代网站不能依赖 VS Code Webview iframe 作为主路径；嵌入浏览器核心也没有同时满足体积小、现代站点兼容、可发布维护的现实选择。BMCP 已转向“托管系统浏览器运行时 + WebRTC 低延迟显示 + CDP 控制”的主方案：优先使用本机 Chrome、Edge 或 Chromium，没有可用浏览器时再按需安装 Chrome for Testing；WebRTC 承担画面显示，CDP 承担导航、输入、快照和 Agent API 控制，旧 CDP/JPEG 画面流只作为备用显示。
+2026-07-16 更新：SoloBrowser 使用“托管系统浏览器运行时 + WebRTC 低延迟显示 + CDP 控制”的主方案。它优先使用本机稳定版 Chrome、Edge 或 Chromium，以持久 Profile 保留真实会话，并且不改写 User-Agent 或注入虚假指纹；没有可用系统浏览器时才按需安装 Chrome for Testing。WebRTC 承担画面显示，CDP 承担导航、输入、快照和 Agent API 控制，旧 CDP/JPEG 画面流只作为备用显示。
 
 以下 2026-05-31 结论保留为历史刺探记录，其中“优先使用 VS Code 原生浏览器入口”已不再作为 BMCP 主路径。
 

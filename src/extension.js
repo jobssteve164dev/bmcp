@@ -39,7 +39,7 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand('bmcp.openBrowser', async () => {
       const urlInput = await vscode.window.showInputBox({
-        title: 'Open in BMCP',
+        title: 'Open in SoloBrowser',
         prompt: 'Enter a URL, or leave empty for the local demo page',
         value: 'bmcp:demo'
       });
@@ -83,7 +83,7 @@ function startServer(context) {
       if (pathname === '/health' && req.method === 'GET') {
         return sendJson(res, 200, {
           ok: true,
-          name: 'BMCP',
+          name: 'SoloBrowser',
           port: actualPort,
           panelVisible: Boolean(panel),
           current: currentState
@@ -135,7 +135,7 @@ function startServer(context) {
     server.listen(currentPort, '127.0.0.1', () => {
       actualPort = currentPort;
       serverReadyResolve?.();
-      console.log(`BMCP listening on http://127.0.0.1:${actualPort}`);
+      console.log(`SoloBrowser listening on http://127.0.0.1:${actualPort}`);
     });
   }
 
@@ -145,7 +145,7 @@ function startServer(context) {
       currentPort++;
       tryListen();
     } else {
-      vscode.window.showErrorMessage(`BMCP could not start local port ${currentPort}: ${error.message}`);
+      vscode.window.showErrorMessage(`SoloBrowser could not start local port ${currentPort}: ${error.message}`);
     }
   });
 
@@ -275,7 +275,7 @@ async function startFallbackStream() {
 function ensurePanel() {
   if (panel) return panel;
 
-  panel = vscode.window.createWebviewPanel('bmcpBrowser', 'BMCP Browser', vscode.ViewColumn.Beside, {
+  panel = vscode.window.createWebviewPanel('bmcpBrowser', 'SoloBrowser', vscode.ViewColumn.Beside, {
     enableScripts: true,
     retainContextWhenHidden: true
   });
@@ -300,7 +300,7 @@ function ensurePanel() {
     if (message.ok) {
       entry.resolve(message.result);
     } else {
-      entry.reject(new Error(message.error || 'BMCP webview action failed.'));
+      entry.reject(new Error(message.error || 'SoloBrowser webview action failed.'));
     }
   });
 
@@ -310,7 +310,7 @@ function ensurePanel() {
       closeNativeStream();
     }
     for (const entry of pending.values()) {
-      entry.reject(new Error('BMCP browser panel was closed.'));
+      entry.reject(new Error('SoloBrowser browser panel was closed.'));
     }
     pending.clear();
   });
@@ -539,7 +539,7 @@ function requestWebview(action, payload = {}) {
     setTimeout(() => {
       if (!pending.has(id)) return;
       pending.delete(id);
-      reject(new Error(`Timed out waiting for BMCP action: ${action}`));
+      reject(new Error(`Timed out waiting for SoloBrowser action: ${action}`));
     }, 5000);
   });
 }
@@ -622,7 +622,7 @@ async function ensureNativeStream() {
     streamUrl = extractStreamUrl(output);
   }
   if (!streamUrl) {
-    throw new Error(`BMCP could not find the native browser stream URL. Output: ${output}`);
+    throw new Error(`SoloBrowser could not find the native browser stream URL. Output: ${output}`);
   }
   return streamUrl;
 }
@@ -923,7 +923,7 @@ function getDemoHtml() {
 </head>
 <body>
   <div class="shell">
-    <header><strong>BMCP Browser</strong><span>Local demo page</span></header>
+    <header><strong>SoloBrowser</strong><span>Local demo page</span></header>
     <main>
       <section id="login" class="login">
         <h1>Sign in</h1>

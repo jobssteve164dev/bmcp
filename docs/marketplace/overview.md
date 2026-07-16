@@ -1,28 +1,30 @@
-# BMCP Marketplace Overview
+# SoloBrowser
 
-BMCP gives local agent CLIs a visible browser inside VS Code.
+SoloBrowser gives local AI agents a real, visible browser inside VS Code, while you keep the page and every action in view.
 
-Use it when an agent running in the VS Code terminal needs to operate a page and the user wants to see every step. BMCP opens a browser panel, exposes a localhost control bridge, and returns structured element snapshots so the agent can click and type against explicit controls.
+Use it when an agent in the VS Code terminal needs to browse, inspect, fill, or verify a website. SoloBrowser opens a persistent local Chrome, Edge, or Chromium session, shows it inside VS Code, and gives the agent structured controls instead of asking it to guess from screenshots.
 
 ## Highlights
 
-- Visible browser panel inside VS Code.
+- Real, visible browser session inside VS Code.
 - Local HTTP bridge for existing agent CLIs.
 - Structured element snapshots with stable references.
-- Live external-site view backed by a real local browser session.
+- Persistent browser profile for cookies, preferences, and signed-in sessions.
+- Stable system browser preferred over a downloaded testing browser.
+- Browser-native navigation and input through Chrome DevTools Protocol.
 - Working first-run demo with open, snapshot, type, click, and read-result.
 - Local-first workflow with no hosted browser service.
 
 ## First Run
 
-Run `BMCP: Run Demo` from the Command Palette.
+Run `SoloBrowser: Open Browser` from the Command Palette and enter a URL. To try the local walkthrough first, run `SoloBrowser: Run Demo`.
 
-BMCP opens the browser panel, fills the demo sign-in form, clicks Sign in, and reports the visible inventory state through the local bridge.
+SoloBrowser opens the browser panel, fills the demo sign-in form, clicks Sign in, and reports the visible result through the local bridge.
 
 ## Current Scope
 
-This first release proves the VS Code-visible browser loop and local agent bridge. The local demo runs fully inside the extension, while external pages are opened through a real local browser session and mirrored into the BMCP panel so the user can watch and interact with the page.
+External pages run in a managed, headed browser—not an iframe or a headless page. SoloBrowser keeps one local profile, uses the browser's own network stack and identity, and mirrors the visible tab into VS Code. It does not rewrite the User-Agent or inject a synthetic browser fingerprint.
 
 ## Safety Boundary
 
-BMCP is for user-authorized browser actions in the user's visible local workspace. It is not positioned as CAPTCHA bypass, anti-fraud bypass, scraping evasion, or security-control circumvention tooling.
+SoloBrowser is for user-authorized browser actions in the user's visible local workspace. A real browser identity improves compatibility, but no extension can guarantee that every site will accept an automated session. SoloBrowser does not bypass CAPTCHA, anti-fraud checks, access controls, or site policy.

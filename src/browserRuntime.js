@@ -35,19 +35,10 @@ async function ensureBrowserRuntime(options) {
     `--remote-debugging-port=${remoteDebuggingPort}`,
     `--user-data-dir=${userDataDir}`,
     `--load-extension=${extensionPath}`,
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-background-timer-throttling',
-    '--disable-renderer-backgrounding',
-    '--disable-features=CalculateNativeWinOcclusion',
-    '--enable-usermedia-screen-capturing',
-    '--allow-http-screen-capture',
-    '--auto-accept-this-tab-capture',
-    '--auto-select-desktop-capture-source=Entire screen',
-    '--window-size=1280,720',
+    ...runtimeIdentityArgs(),
     options.url
   ];
-  if (process.platform === 'linux') {
+  if (requiresNoSandbox()) {
     runtimeArgs.splice(runtimeArgs.length - 1, 0, '--no-sandbox');
   }
 
@@ -77,6 +68,24 @@ async function ensureBrowserRuntime(options) {
     url: options.url
   };
   return runtime;
+}
+
+function runtimeIdentityArgs() {
+  return [
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding',
+    '--disable-features=CalculateNativeWinOcclusion',
+    '--auto-accept-this-tab-capture',
+    '--window-size=1280,720'
+  ];
+}
+
+function requiresNoSandbox() {
+  if (process.platform !== 'linux') return false;
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return true;
+  return fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
 }
 
 function closeBrowserRuntime() {
@@ -176,7 +185,7 @@ async function ensureChromeForTesting(storagePath) {
   await downloadFile(url, archivePath);
   await extract(archivePath, { dir: installDir });
   if (!fs.existsSync(executable)) {
-    throw new Error(`BMCP downloaded Chrome for Testing but could not find ${executable}`);
+    throw new Error(`SoloBrowser downloaded Chrome for Testing but could not find ${executable}`);
   }
   return executable;
 }
@@ -209,7 +218,7 @@ function downloadFile(fileUrl, destination) {
         return downloadFile(response.headers.location, destination).then(resolve, reject);
       }
       if (response.statusCode !== 200) {
-        reject(new Error(`BMCP could not download browser runtime: HTTP ${response.statusCode}`));
+        reject(new Error(`SoloBrowser could not download browser runtime: HTTP ${response.statusCode}`));
         return;
       }
       const file = fs.createWriteStream(destination);
@@ -234,14 +243,14 @@ function ensureCaptureExtension(storagePath, signalingUrl) {
 function captureManifest() {
   return {
     manifest_version: 3,
-    name: 'BMCP Capture Runtime',
+    name: 'SoloBrowser Capture Runtime',
     version: '1.0.0',
     permissions: ['offscreen'],
     background: {
       service_worker: 'service_worker.js'
     },
     action: {
-      default_title: 'BMCP Capture'
+      default_title: 'SoloBrowser Capture'
     }
   };
 }
@@ -298,7 +307,7 @@ async function ensureOffscreen() {
   await chrome.offscreen.createDocument({
     url: 'offscreen.html',
     reasons: ['DISPLAY_MEDIA', 'USER_MEDIA'],
-    justification: 'Stream the active BMCP browser tab into the VS Code browser view.'
+    justification: 'Stream the active SoloBrowser tab into the VS Code browser view.'
   });
 }
 `;
@@ -371,7 +380,7 @@ async function findAvailablePort(start) {
   for (let port = start; port < start + 50; port++) {
     if (await canListen(port)) return port;
   }
-  throw new Error('BMCP could not find an available browser debugging port.');
+  throw new Error('SoloBrowser could not find an available browser debugging port.');
 }
 
 function canListen(port) {
@@ -514,7 +523,7 @@ class CdpClient {
     });
     const value = result.result?.value;
     if (!value?.ok) {
-      throw new Error(value?.error || 'BMCP could not start current-tab WebRTC capture.');
+      throw new Error(value?.error || 'SoloBrowser could not start current-tab WebRTC capture.');
     }
     return value;
   }
@@ -795,13 +804,13 @@ async function waitForCdp(port) {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
-  throw new Error('BMCP browser runtime did not expose CDP in time.');
+  throw new Error('SoloBrowser browser runtime did not expose CDP in time.');
 }
 
 async function firstPage(port) {
   const pages = await jsonGet(`http://127.0.0.1:${port}/json/list`);
   const page = pages.find((item) => item.type === 'page' && item.webSocketDebuggerUrl);
-  if (!page) throw new Error('BMCP browser runtime has no controllable page.');
+  if (!page) throw new Error('SoloBrowser browser runtime has no controllable page.');
   return page;
 }
 
@@ -828,5 +837,7 @@ module.exports = {
   ensureBrowserRuntime,
   ensureCaptureExtension,
   findSystemBrowser,
-  normalizeBrowserCandidates: browserCandidates
+  normalizeBrowserCandidates: browserCandidates,
+  requiresNoSandbox,
+  runtimeIdentityArgs
 };

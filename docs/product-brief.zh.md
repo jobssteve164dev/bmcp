@@ -1,12 +1,12 @@
-# BMCP 产品简报
+# SoloBrowser 产品简报
 
 ## 1. 产品边界
 
-BMCP 是一个给本地 agent CLI 使用的 VS Code 浏览器操作脚手架。
+SoloBrowser 是一个给本地 agent CLI 使用的、在 VS Code 中真正可见的浏览器。
 
 它不尝试成为新的 agent CLI。第一版产品边界是：让 Claude Code、Codex、Cursor Agent、Gemini CLI 以及其他支持 MCP 或 HTTP 调用的本地 agent CLI，能够在 VS Code 中打开并操作一个用户看得见的浏览器。
 
-核心承诺很简单：当 agent 需要使用网站时，用户应该能看到浏览器、看懂正在发生什么，并且整个过程仍然留在同一个编辑器工作流里。
+核心承诺很简单：当 agent 需要使用网站时，用户能看到真实浏览器和每一步动作，并且整个过程仍然留在同一个编辑器工作流里。
 
 ## 2. 当前市场信号
 

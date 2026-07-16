@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/jobssteve164dev/bmcp/main/icon.png" width="128" height="128" alt="BMCP Logo">
+  <img src="https://raw.githubusercontent.com/jobssteve164dev/bmcp/main/icon.png" width="128" height="128" alt="SoloBrowser Logo">
 </p>
 
-# BMCP (Browser Media Control Protocol)
+# SoloBrowser
 
-BMCP is a visible VS Code browser scaffold designed for local AI Agent CLIs. It empowers agent CLIs (such as Claude Code, Cursor Agent, Gemini CLI, etc.) to open and interact with a visible browser session directly inside VS Code workspace.
+SoloBrowser is a real, visible browser for VS Code. Local AI agents such as Codex, Claude Code, Cursor Agent, and Gemini CLI can browse and operate websites while you watch every action in the editor.
 
-BMCP 专为本地 AI 代理（Agent CLI）设计，提供 VS Code 可视化浏览器控制脚手架。它让本地 AI 代理（如 Claude Code, Cursor Agent, Gemini CLI 等）能够直接在 VS Code 工作区中打开并控制一个完全可见的浏览器实例。
+SoloBrowser 为本地 AI 代理提供一个真正可见的 VS Code 浏览器。Codex、Claude Code、Cursor Agent、Gemini CLI 等工具可以浏览和操作网站，而用户始终能在编辑器里看到页面与每一步动作。
 
 ---
 
@@ -14,8 +14,8 @@ BMCP 专为本地 AI 代理（Agent CLI）设计，提供 VS Code 可视化浏�
 
 ### 🚀 Key Features
 
-1. **Low-Latency Sidebar Browser (`BMCP Browser`)**  
-   A visible browser view for modern websites such as YouTube and Bilibili. BMCP opens a managed local Chrome, Edge, or Chromium runtime and streams the page back into VS Code over WebRTC, with a built-in fallback for environments where capture is unavailable.
+1. **Real Browser in VS Code (`SoloBrowser`)**
+   Opens a headed local Chrome, Edge, or Chromium session for modern websites such as YouTube and Bilibili, then displays the active tab in VS Code with low-latency WebRTC.
 
 2. **Native Port Tunneling (`portMapping`)**  
    Utilizes VS Code's official `portMapping` API to automatically establish a secure tunnel. Webviews and iframes can seamlessly communicate with the container backend using `localhost` with **zero-configuration**—fully compatible with Coder, `code-server`, GitHub Codespaces, and Remote SSH.
@@ -29,19 +29,19 @@ BMCP 专为本地 AI 代理（Agent CLI）设计，提供 VS Code 可视化浏�
    * `/snapshot` - Retrieve a structured accessibility tree and DOM snapshot (instead of raw screenshots).
    * `/click` / `/type` / `/read` - Execute human-like actions on elements via stable selectors.
 
-5. **Managed Browser Runtime + WebRTC Display**  
-   Uses the user's installed Chrome, Edge, or Chromium first, and lazily installs Chrome for Testing only when no compatible browser is found. WebRTC carries the visible page stream, while CDP is reserved for navigation, input, snapshots, and local Agent API control.
+5. **Consistent Real-Browser Identity**
+   Prefers the user's stable Chrome, Edge, or Chromium installation and keeps a persistent local profile for cookies and preferences. SoloBrowser uses the browser's own network stack and reported identity; it does not spoof the User-Agent or inject a synthetic fingerprint.
 
 ---
 
 ### 📦 Installation & Getting Started
 
-1. Install **BMCP** from the Visual Studio Marketplace.
+1. Install **SoloBrowser** from the Visual Studio Marketplace.
 2. Open the Command Palette (`Ctrl+Shift+P` or `Cmd+Shift+P`).
-3. Run **`BMCP: Open Browser`** and enter a URL (e.g., `https://youtube.com`), or leave it empty to open the sidebar.
-4. Run **`BMCP: Run Demo`** to watch the automated sign-in demo flow on a local fixture page.
+3. Run **`SoloBrowser: Open Browser`** and enter a URL (e.g., `https://youtube.com`), or leave it empty to open the sidebar.
+4. Run **`SoloBrowser: Run Demo`** to watch the automated sign-in demo flow on a local fixture page.
 
-Optional: set `bmcp.browserPath` if you want BMCP to use a specific Chrome, Edge, or Chromium executable.
+Optional: set `bmcp.browserPath` if you want SoloBrowser to use a specific Chrome, Edge, or Chromium executable. The legacy setting key remains stable so existing installations keep working after the rename.
 
 #### Controlling from Local Agent CLIs
 Once activated, local agent scripts can invoke control APIs via cURL:
@@ -64,8 +64,8 @@ curl -X POST http://127.0.0.1:17333/snapshot -d '{}'
 
 ### 🚀 核心特性
 
-1. **低延迟侧边栏浏览器 (`BMCP Browser`)**  
-   面向 YouTube、Bilibili 等现代网站的可见浏览器视图。BMCP 会优先使用本机已安装的 Chrome、Edge 或 Chromium，并通过 WebRTC 把页面低延迟显示在 VS Code 内；当前环境无法捕获时会自动切换备用显示。
+1. **VS Code 内的真实浏览器 (`SoloBrowser`)**
+   使用本机有界面的 Chrome、Edge 或 Chromium 打开 YouTube、Bilibili 等现代网站，再通过 WebRTC 将当前标签页低延迟显示在 VS Code 内。
 
 2. **官方原生端口隧道桥接 (`portMapping`)**  
    基于 VS Code 官方 `portMapping` 接口，自动在后台建立安全隧道。前端 Webview 能够无感地通过 `localhost` 访问容器内的代理服务端，**零配置**完美兼容 Coder、`code-server`、GitHub Codespaces 以及 Remote SSH 远程开发环境。
@@ -79,19 +79,19 @@ curl -X POST http://127.0.0.1:17333/snapshot -d '{}'
    * `/snapshot` - 获取结构化元素和 DOM 树快照（返回稳定元素引用，拒绝视觉猜测）。
    * `/click` / `/type` / `/read` - 根据元素引用执行点击、输入和内容读取。
 
-5. **托管浏览器运行时 + WebRTC 显示**  
-   优先复用用户本机浏览器；如果没有可用的 Chrome、Edge 或 Chromium，再按需安装 Chrome for Testing。WebRTC 负责可见页面显示，CDP 只负责导航、输入、快照和本地 Agent API 控制。
+5. **一致的真实浏览器身份**
+   优先复用用户安装的稳定版 Chrome、Edge 或 Chromium，并通过持久本地 Profile 保留 Cookie、偏好和登录状态。SoloBrowser 使用浏览器自身的网络栈与身份，不伪造 User-Agent，也不注入虚假指纹。
 
 ---
 
 ### 📦 快速上手与使用
 
-1. 在 VS Code Marketplace 安装 **BMCP** 插件。
+1. 在 VS Code Marketplace 安装 **SoloBrowser** 插件。
 2. 按下 `Ctrl+Shift+P`（或 `Cmd+Shift+P`）打开命令面板。
-3. 执行 **`BMCP: Open Browser`** 并输入您想访问的网址（如 `https://youtube.com`），或直接打开侧边栏。
-4. 执行 **`BMCP: Run Demo`** 体验在本地测试页面上自动输入账密并登录的演示流程。
+3. 执行 **`SoloBrowser: Open Browser`** 并输入您想访问的网址（如 `https://youtube.com`），或直接打开侧边栏。
+4. 执行 **`SoloBrowser: Run Demo`** 体验本地演示流程。
 
-可选：如果希望指定浏览器，可在设置里填写 `bmcp.browserPath`，指向 Chrome、Edge 或 Chromium 可执行文件。
+可选：如果希望指定浏览器，可在设置里填写 `bmcp.browserPath`，指向 Chrome、Edge 或 Chromium 可执行文件。为保证升级后原有配置继续生效，设置键暂时保持不变。
 
 #### 本地 AI 代理（Agent）调用示例
 插件激活后，本地 Agent 脚本可以直接通过 cURL 操控工作区浏览器：
@@ -112,6 +112,6 @@ curl -X POST http://127.0.0.1:17333/snapshot -d '{}'
 
 ## 🛡️ Safety Boundary / 安全边界
 
-BMCP is designed for user-authorized browser work in a visible local VS Code workspace. It does not provide features for CAPTCHA bypass, anti-fraud evasion, or scraping stealth. 
+SoloBrowser is designed for user-authorized browser work in a visible local VS Code workspace. A real browser identity improves compatibility, but no browser extension can guarantee acceptance by every website. It does not bypass CAPTCHA, anti-fraud checks, access controls, or site policy.
 
-BMCP 旨在为用户授权的、留在本地工作区内的浏览器自动化提供可视化脚手架。它不支持、也不提供任何用于绕过验证码（CAPTCHA）、反欺诈机制或指纹对抗的爬虫工具属性。
+SoloBrowser 用于用户已授权、且在本地工作区中可见的浏览任务。真实浏览器身份可以减少兼容问题，但不能保证所有网站都接受自动化会话；插件不会绕过验证码、反欺诈检查、访问控制或网站规则。
