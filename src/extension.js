@@ -761,6 +761,8 @@ function getNativeHtml(state) {
     let lastMove = 0;
     let resizeTimer;
     let peer;
+    let controlChannel;
+    let pointerChannel;
 
     function setStatus(text, connected) {
       statusText.textContent = text;
@@ -768,6 +770,13 @@ function getNativeHtml(state) {
     }
 
     function send(message) {
+      const channel = message.eventType === 'mouseMoved' || message.eventType === 'mouseWheel'
+        ? pointerChannel
+        : controlChannel;
+      if (channel?.readyState === 'open') {
+        channel.send(JSON.stringify({ type: 'nativeInput', input: message }));
+        return;
+      }
       vscode.postMessage({ type: 'nativeInput', input: message });
     }
 
@@ -775,6 +784,10 @@ function getNativeHtml(state) {
       const rect = viewport.getBoundingClientRect();
       const width = Math.max(320, Math.round(rect.width));
       const height = Math.max(240, Math.round(rect.height));
+      if (controlChannel?.readyState === 'open') {
+        controlChannel.send(JSON.stringify({ type: 'nativeResize', width, height }));
+        return;
+      }
       vscode.postMessage({ type: 'nativeResize', width, height });
     }
 
@@ -816,6 +829,8 @@ function getNativeHtml(state) {
     async function startWebRtc() {
       if (peer) peer.close();
       peer = new RTCPeerConnection({ iceServers: [] });
+      controlChannel = peer.createDataChannel('solobrowser-control', { ordered: true });
+      pointerChannel = peer.createDataChannel('solobrowser-pointer', { ordered: false, maxRetransmits: 0 });
       peer.ontrack = (event) => {
         stream.srcObject = event.streams[0];
         stream.classList.remove('hidden');
@@ -1550,6 +1565,8 @@ class BmcpWebviewViewProvider {
     let lastMove = 0;
     let resizeTimer;
     let peer;
+    let controlChannel;
+    let pointerChannel;
 
     function navigateTo(targetUrl) {
       setStatus('正在打开', false);
@@ -1563,16 +1580,25 @@ class BmcpWebviewViewProvider {
     }
 
     function sendInput(message) {
+      const channel = message.eventType === 'mouseMoved' || message.eventType === 'mouseWheel'
+        ? pointerChannel
+        : controlChannel;
+      if (channel?.readyState === 'open') {
+        channel.send(JSON.stringify({ type: 'nativeInput', input: message }));
+        return;
+      }
       vscode.postMessage({ type: 'nativeInput', input: message });
     }
 
     function sendViewportSize() {
       const rect = viewport.getBoundingClientRect();
-      vscode.postMessage({
-        type: 'nativeResize',
-        width: Math.max(320, Math.round(rect.width)),
-        height: Math.max(240, Math.round(rect.height))
-      });
+      const width = Math.max(320, Math.round(rect.width));
+      const height = Math.max(240, Math.round(rect.height));
+      if (controlChannel?.readyState === 'open') {
+        controlChannel.send(JSON.stringify({ type: 'nativeResize', width, height }));
+        return;
+      }
+      vscode.postMessage({ type: 'nativeResize', width, height });
     }
 
     function scheduleViewportSize() {
@@ -1678,6 +1704,8 @@ class BmcpWebviewViewProvider {
     async function startWebRtc() {
       if (peer) peer.close();
       peer = new RTCPeerConnection({ iceServers: [] });
+      controlChannel = peer.createDataChannel('solobrowser-control', { ordered: true });
+      pointerChannel = peer.createDataChannel('solobrowser-pointer', { ordered: false, maxRetransmits: 0 });
       peer.ontrack = (event) => {
         stream.srcObject = event.streams[0];
         stream.classList.remove('hidden');

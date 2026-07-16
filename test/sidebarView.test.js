@@ -26,6 +26,8 @@ assert.strictEqual(__test.normalizeTarget('youtube.com').url, 'https://youtube.c
 assert(html.includes("vscode.postMessage({ type: 'openNative'"));
 assert(html.includes("vscode.postMessage({ type: 'nativeInput'"));
 assert(html.includes("vscode.postMessage({ type: 'webrtcOffer'"));
+assert(html.includes("peer.createDataChannel('solobrowser-control'"));
+assert(html.includes("peer.createDataChannel('solobrowser-pointer'"));
 assert(html.includes('<video id="stream" autoplay playsinline muted></video>'));
 assert(html.includes('media-src blob:'));
 assert(!html.includes('<iframe'));

@@ -1,6 +1,7 @@
 .git/**
 .github/**
 .solopreneur/**
+.playwright-cli/**
 .local-test/**
 .market-test/**
 .market-install/**

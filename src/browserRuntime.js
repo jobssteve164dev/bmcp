@@ -245,7 +245,7 @@ function captureManifest() {
     manifest_version: 3,
     name: 'SoloBrowser Capture Runtime',
     version: '1.0.0',
-    permissions: ['offscreen'],
+    permissions: ['offscreen', 'debugger', 'tabs'],
     background: {
       service_worker: 'service_worker.js'
     },
@@ -259,6 +259,11 @@ function captureServiceWorker(signalingUrl) {
   return `
 const SIGNALING_URL = ${JSON.stringify(signalingUrl)};
 let socket;
+let controlledTabId;
+let debuggerAttached = false;
+let inputQueue = Promise.resolve();
+let latestPointerMove;
+let pointerMoveScheduled = false;
 
 connect();
 
@@ -269,6 +274,17 @@ chrome.action.onClicked.addListener(() => {
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'webrtcAnswer' || message?.type === 'webrtcCandidate' || message?.type === 'capture-error' || message?.type === 'capture-ready') {
     send(message);
+  }
+  if (message?.type === 'native-input' && message.input) {
+    enqueueInput(message.input);
+  }
+  if (message?.type === 'native-resize') {
+    enqueueCommand('Emulation.setDeviceMetricsOverride', {
+      width: clamp(message.width, 320, 3000),
+      height: clamp(message.height, 240, 2200),
+      deviceScaleFactor: 1,
+      mobile: false
+    });
   }
 });
 
@@ -294,12 +310,82 @@ function send(message) {
 }
 
 async function startCapture(message) {
+  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const nextTabId = tabs[0]?.id;
+  if (!nextTabId) throw new Error('SoloBrowser could not identify the active browser tab.');
+  if (debuggerAttached && controlledTabId !== nextTabId) {
+    await chrome.debugger.detach({ tabId: controlledTabId }).catch(() => {});
+    debuggerAttached = false;
+  }
+  controlledTabId = nextTabId;
   await ensureOffscreen();
   chrome.runtime.sendMessage({
     type: 'startCapture',
     offer: message.offer,
     source: 'display'
   });
+}
+
+function enqueueInput(input) {
+  if (input.type === 'input_mouse' && input.eventType === 'mouseMoved') {
+    latestPointerMove = input;
+    if (!pointerMoveScheduled) {
+      pointerMoveScheduled = true;
+      setTimeout(() => {
+        pointerMoveScheduled = false;
+        const next = latestPointerMove;
+        latestPointerMove = undefined;
+        if (next) enqueueInputCommand(next);
+      }, 16);
+    }
+    return;
+  }
+  enqueueInputCommand(input);
+}
+
+function enqueueInputCommand(input) {
+  if (input.type === 'input_mouse') {
+    enqueueCommand('Input.dispatchMouseEvent', {
+      type: input.eventType || 'mouseMoved',
+      x: Number(input.x) || 0,
+      y: Number(input.y) || 0,
+      button: input.button === 'none' ? 'none' : input.button || 'left',
+      clickCount: Number(input.clickCount) || 0,
+      deltaX: Number(input.deltaX) || 0,
+      deltaY: Number(input.deltaY) || 0
+    });
+    return;
+  }
+  if (input.type === 'input_keyboard') {
+    const params = {
+      type: input.eventType === 'keyUp' ? 'keyUp' : 'keyDown',
+      key: input.key || '',
+      code: input.code || ''
+    };
+    if (params.type === 'keyDown' && input.key?.length === 1) {
+      params.text = input.text || input.key;
+      params.unmodifiedText = input.unmodifiedText || input.key;
+    }
+    enqueueCommand('Input.dispatchKeyEvent', params);
+  }
+}
+
+function enqueueCommand(method, params) {
+  inputQueue = inputQueue.then(async () => {
+    await ensureDebugger();
+    return chrome.debugger.sendCommand({ tabId: controlledTabId }, method, params);
+  }).catch((error) => send({ type: 'capture-error', error: error.message }));
+}
+
+async function ensureDebugger() {
+  if (debuggerAttached) return;
+  await chrome.debugger.attach({ tabId: controlledTabId }, '1.3');
+  debuggerAttached = true;
+}
+
+function clamp(value, min, max) {
+  const number = Math.round(Number(value));
+  return Math.max(min, Math.min(max, Number.isFinite(number) ? number : min));
 }
 
 async function ensureOffscreen() {
@@ -320,6 +406,8 @@ function captureOffscreenHtml() {
 function captureOffscreenScript() {
   return `
 let peer;
+let controlChannel;
+let pointerChannel;
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'startCapture') startCapture(message).catch((error) => {
@@ -354,6 +442,22 @@ async function startCapture(message) {
   audio.play().catch(() => {});
 
   peer = new RTCPeerConnection({ iceServers: [] });
+  peer.ondatachannel = (event) => {
+    const channel = event.channel;
+    if (channel.label === 'solobrowser-control') controlChannel = channel;
+    if (channel.label === 'solobrowser-pointer') pointerChannel = channel;
+    channel.onmessage = (messageEvent) => {
+      try {
+        const message = JSON.parse(messageEvent.data);
+        if (message.type === 'nativeInput') {
+          chrome.runtime.sendMessage({ type: 'native-input', input: message.input });
+        }
+        if (message.type === 'nativeResize') {
+          chrome.runtime.sendMessage({ type: 'native-resize', width: message.width, height: message.height });
+        }
+      } catch (_) {}
+    };
+  };
   peer.onicecandidate = (event) => {
     if (event.candidate) {
       chrome.runtime.sendMessage({ type: 'webrtcCandidate', candidate: event.candidate });
@@ -833,6 +937,8 @@ function jsonGet(targetUrl) {
 module.exports = {
   CHROME_FOR_TESTING_VERSION,
   captureManifest,
+  captureOffscreenScript,
+  captureServiceWorker,
   closeBrowserRuntime,
   ensureBrowserRuntime,
   ensureCaptureExtension,

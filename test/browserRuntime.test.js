@@ -1,7 +1,10 @@
 const assert = require('assert');
+const vm = require('vm');
 const {
   CHROME_FOR_TESTING_VERSION,
   captureManifest,
+  captureOffscreenScript,
+  captureServiceWorker,
   normalizeBrowserCandidates,
   requiresNoSandbox,
   runtimeIdentityArgs
@@ -13,6 +16,8 @@ const candidates = normalizeBrowserCandidates();
 assert(/^\d+\.\d+\.\d+\.\d+$/.test(CHROME_FOR_TESTING_VERSION));
 assert.strictEqual(manifest.manifest_version, 3);
 assert(manifest.permissions.includes('offscreen'));
+assert(manifest.permissions.includes('debugger'));
+assert(manifest.permissions.includes('tabs'));
 assert(!manifest.permissions.includes('tabCapture'));
 assert(!manifest.permissions.includes('desktopCapture'));
 assert(!manifest.permissions.includes('activeTab'));
@@ -28,5 +33,7 @@ assert(!identityArgs.includes('--auto-select-desktop-capture-source=Entire scree
 assert(!identityArgs.includes('--enable-usermedia-screen-capturing'));
 assert(!identityArgs.includes('--allow-http-screen-capture'));
 assert.strictEqual(typeof requiresNoSandbox(), 'boolean');
+new vm.Script(captureServiceWorker('ws://127.0.0.1:17333/runtime'), { filename: 'capture-service-worker.js' });
+new vm.Script(captureOffscreenScript(), { filename: 'capture-offscreen.js' });
 
 console.log('browserRuntime.test OK');

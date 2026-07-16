@@ -6,6 +6,8 @@
 
 2026-07-16 更新：SoloBrowser 使用“托管系统浏览器运行时 + WebRTC 低延迟显示 + CDP 控制”的主方案。它优先使用本机稳定版 Chrome、Edge 或 Chromium，以持久 Profile 保留真实会话，并且不改写 User-Agent 或注入虚假指纹；没有可用系统浏览器时才按需安装 Chrome for Testing。WebRTC 承担画面显示，CDP 承担导航、输入、快照和 Agent API 控制，旧 CDP/JPEG 画面流只作为备用显示。
 
+同日的 Coder 延迟审计进一步冻结数据面边界：Agent 的快照与操作始终在远程宿主内通过本机 CDP 完成；WebRTC 直接承担远程浏览器到 Webview 的视频下行，并通过 DataChannel 直接承载人工接管输入。可靠有序通道用于点击、键盘和视口尺寸，低延迟无重传通道用于鼠标移动与滚轮；VS Code 消息链只作为 DataChannel 尚未就绪时的兼容回退。插件负责会话和状态编排，不再作为高频人工输入的数据转发层。
+
 以下 2026-05-31 结论保留为历史刺探记录，其中“优先使用 VS Code 原生浏览器入口”已不再作为 BMCP 主路径。
 
 BMCP 不应继续把“外部 Chrome 画面流桥接进 VS Code”作为主体验。这个方向会持续暴露字体、焦点、坐标、延迟和输入法问题，用户感知也不是 VS Code 原生浏览器。
