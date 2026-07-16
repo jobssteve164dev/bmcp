@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish. Leave empty to bump patch."
+        description: "Exact version to publish. Leave empty to republish the current package version."
         required: false
         type: string
 
@@ -46,29 +46,32 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump version and tag
+      - name: Resolve version and tag
         id: version
         run: |
-          # 判定升级策略
-          BUMP_TYPE="patch"
-          COMMIT_MSG=""
-          
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ -n "${{ github.event.inputs.version }}" ]; then
-              BUMP_TYPE="${{ github.event.inputs.version }}"
+            CURRENT_VERSION=$(node -p "require('./package.json').version")
+            TARGET_VERSION="${{ github.event.inputs.version }}"
+            if [ -z "$TARGET_VERSION" ]; then
+              TARGET_VERSION="$CURRENT_VERSION"
+            fi
+
+            if [ "$TARGET_VERSION" != "$CURRENT_VERSION" ]; then
+              npm version "$TARGET_VERSION" -m "chore: release v%s [skip ci]"
+            elif ! git rev-parse "v$TARGET_VERSION" >/dev/null 2>&1; then
+              git tag -a "v$TARGET_VERSION" -m "v$TARGET_VERSION"
             fi
           else
             COMMIT_MSG="${{ github.event.head_commit.message }}"
+            BUMP_TYPE="patch"
             if echo "$COMMIT_MSG" | grep -qiE '#major|\[major\]'; then
               BUMP_TYPE="major"
             elif echo "$COMMIT_MSG" | grep -qiE '#minor|\[minor\]'; then
               BUMP_TYPE="minor"
             fi
+            npm version "$BUMP_TYPE" -m "chore: release v%s [skip ci]"
           fi
-          
-          echo "Bumping version using type: $BUMP_TYPE"
-          npm version "$BUMP_TYPE" -m "chore: release v%s [skip ci]"
-          
+
           NEW_VER=$(node -p "require('./package.json').version")
           echo "version=$NEW_VER" >> "$GITHUB_OUTPUT"
 
@@ -90,7 +93,27 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to Visual Studio Marketplace
-        run: npx vsce publish --allow-star-activation -p "$VSCE_PAT"
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PACKAGE_URL="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/SZLK/vsextensions/solobrowser/$VERSION/vspackage"
+
+          if curl --fail --silent --location --output /dev/null "$PACKAGE_URL"; then
+            echo "Visual Studio Marketplace already has SoloBrowser v$VERSION."
+            exit 0
+          fi
+
+          for attempt in 1 2 3; do
+            if npx vsce publish --allow-star-activation -p "$VSCE_PAT"; then
+              exit 0
+            fi
+            if curl --fail --silent --location --output /dev/null "$PACKAGE_URL"; then
+              echo "Visual Studio Marketplace accepted SoloBrowser v$VERSION despite the timed-out publish request."
+              exit 0
+            fi
+            echo "Marketplace publish attempt $attempt failed; retrying."
+            sleep $((attempt * 10))
+          done
+          exit 1
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
@@ -100,4 +123,4 @@ jobs:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
 
       - name: Summary
-        run: echo "Published BMCP v${{ steps.version.outputs.version }} and created GitHub Release"
+        run: echo "Published SoloBrowser v${{ steps.version.outputs.version }} and created GitHub Release"
