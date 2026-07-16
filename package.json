@@ -2,7 +2,7 @@
   "name": "solobrowser",
   "displayName": "SoloBrowser",
   "description": "A real, visible browser in VS Code for local AI agents and everyday web tasks.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "SZLK",
   "icon": "icon.png",
   "license": "MIT",
