@@ -9,11 +9,15 @@ const WebSocket = require('ws');
 
 const CHROME_FOR_TESTING_VERSION = '149.0.7827.54';
 const DEFAULT_RUNTIME_PORT = 17433;
+const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 let runtimeProcess;
 let runtime;
+let runtimeIdle = false;
+let idleTimer;
 
 async function ensureBrowserRuntime(options) {
+  refreshIdleTimer();
   const storagePath = options.storagePath;
   fs.mkdirSync(storagePath, { recursive: true });
 
@@ -89,6 +93,8 @@ function requiresNoSandbox() {
 }
 
 function closeBrowserRuntime() {
+  clearTimeout(idleTimer);
+  idleTimer = undefined;
   if (runtime?.cdp) {
     runtime.cdp.close();
   }
@@ -97,6 +103,21 @@ function closeBrowserRuntime() {
     runtimeProcess.kill();
   }
   runtimeProcess = undefined;
+}
+
+function setBrowserRuntimeIdle(idle, timeoutMs = DEFAULT_IDLE_TIMEOUT_MS) {
+  runtimeIdle = Boolean(idle);
+  clearTimeout(idleTimer);
+  idleTimer = undefined;
+  if (runtimeIdle && runtimeProcess) {
+    idleTimer = setTimeout(closeBrowserRuntime, timeoutMs);
+  }
+}
+
+function refreshIdleTimer(timeoutMs = DEFAULT_IDLE_TIMEOUT_MS) {
+  if (!runtimeIdle) return;
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(closeBrowserRuntime, timeoutMs);
 }
 
 async function resolveBrowserPath(options) {
@@ -936,6 +957,7 @@ function jsonGet(targetUrl) {
 
 module.exports = {
   CHROME_FOR_TESTING_VERSION,
+  DEFAULT_IDLE_TIMEOUT_MS,
   captureManifest,
   captureOffscreenScript,
   captureServiceWorker,
@@ -945,5 +967,6 @@ module.exports = {
   findSystemBrowser,
   normalizeBrowserCandidates: browserCandidates,
   requiresNoSandbox,
-  runtimeIdentityArgs
+  runtimeIdentityArgs,
+  setBrowserRuntimeIdle
 };

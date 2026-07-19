@@ -6,7 +6,8 @@ const vscode = require('vscode');
 const WebSocket = require('ws');
 const {
   closeBrowserRuntime,
-  ensureBrowserRuntime
+  ensureBrowserRuntime,
+  setBrowserRuntimeIdle
 } = require('./browserRuntime');
 
 const DEFAULT_PORT = 17333;
@@ -70,6 +71,10 @@ function deactivate() {
   }
   closeNativeStream();
   closeBrowserRuntime();
+}
+
+function updateBrowserRuntimeIdleState() {
+  setBrowserRuntimeIdle(!panel?.visible && !sidebarView?.visible);
 }
 
 function startServer(context) {
@@ -313,7 +318,9 @@ function ensurePanel() {
       entry.reject(new Error('SoloBrowser browser panel was closed.'));
     }
     pending.clear();
+    updateBrowserRuntimeIdleState();
   });
+  panel.onDidChangeViewState(updateBrowserRuntimeIdleState);
 
   return panel;
 }
@@ -1330,7 +1337,9 @@ class BmcpWebviewViewProvider {
       if (!panel) {
         closeNativeStream();
       }
+      updateBrowserRuntimeIdleState();
     });
+    webviewView.onDidChangeVisibility(updateBrowserRuntimeIdleState);
 
     webviewView.webview.html = this._getHtmlForWebview();
   }

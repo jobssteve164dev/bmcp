@@ -2,18 +2,22 @@ const assert = require('assert');
 const vm = require('vm');
 const {
   CHROME_FOR_TESTING_VERSION,
+  DEFAULT_IDLE_TIMEOUT_MS,
   captureManifest,
   captureOffscreenScript,
   captureServiceWorker,
   normalizeBrowserCandidates,
   requiresNoSandbox,
-  runtimeIdentityArgs
+  runtimeIdentityArgs,
+  setBrowserRuntimeIdle
 } = require('../src/browserRuntime');
 
 const manifest = captureManifest();
 const candidates = normalizeBrowserCandidates();
 
 assert(/^\d+\.\d+\.\d+\.\d+$/.test(CHROME_FOR_TESTING_VERSION));
+assert.strictEqual(DEFAULT_IDLE_TIMEOUT_MS, 5 * 60 * 1000);
+assert.strictEqual(typeof setBrowserRuntimeIdle, 'function');
 assert.strictEqual(manifest.manifest_version, 3);
 assert(manifest.permissions.includes('offscreen'));
 assert(manifest.permissions.includes('debugger'));
