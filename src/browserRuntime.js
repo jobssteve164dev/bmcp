@@ -1438,9 +1438,9 @@ class CdpClient {
     pageSocket.on('message', (data) => this.handleMessage(data));
   }
 
-  static async connect(port) {
+  static async connect(port, pageId) {
     await waitForCdp(port);
-    const page = await firstPage(port);
+    const page = await firstPage(port, pageId);
     const ws = new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => {
       ws.once('open', resolve);
@@ -2078,9 +2078,9 @@ async function waitForCdp(port) {
   throw new Error('SoloBrowser browser runtime did not expose CDP in time.');
 }
 
-async function firstPage(port) {
+async function firstPage(port, pageId) {
   const pages = await jsonGet(`http://127.0.0.1:${port}/json/list`);
-  const page = pages.find((item) => item.type === 'page' && item.webSocketDebuggerUrl);
+  const page = pages.find((item) => item.type === 'page' && item.webSocketDebuggerUrl && (!pageId || item.id === pageId));
   if (!page) throw new Error('SoloBrowser browser runtime has no controllable page.');
   return page;
 }

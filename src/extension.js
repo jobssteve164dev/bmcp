@@ -6,7 +6,11 @@ const { randomUUID } = require('crypto');
 const { execFile } = require('child_process');
 const vscode = require('vscode');
 const WebSocket = require('ws');
+const { BrowserControl, connectMarkedPage } = require('./control.js');
+const { publishInstance, writeMcpLauncher } = require('./discovery.js');
+const { tools: controlTools, validateArguments } = require('./controlTools.js');
 const {
+  CdpClient,
   closeBrowserSurface,
   closeBrowserRuntime,
   ensureBrowserRuntime,
@@ -46,6 +50,18 @@ let currentState = {
   mode: 'demo',
   url: 'bmcp:demo'
 };
+const instanceId = randomUUID();
+const controls = new WeakMap();
+let backupControl;
+let activePageCdp;
+let unpublishInstance;
+let controlQueue = Promise.resolve();
+
+function serializeControl(operation) {
+  const result = controlQueue.catch(() => {}).then(operation);
+  controlQueue = result;
+  return result;
+}
 
 function createWebviewConnectionRegistry() {
   const ready = new Map();
@@ -203,6 +219,7 @@ function createWebviewConnectionRegistry() {
 
 function activate(context) {
   extensionContext = context;
+  const mcpLauncher = writeMcpLauncher(context.globalStorageUri.fsPath, path.join(context.extensionUri.fsPath, 'scripts/mcp.js'));
   context.subscriptions.push(
     vscode.commands.registerCommand('bmcp.openBrowser', async () => {
       const urlInput = await vscode.window.showInputBox({
@@ -214,6 +231,15 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('bmcp.runDemo', async () => {
       await runDemo();
+    }),
+    vscode.commands.registerCommand('bmcp.copyMcpConfig', async () => {
+      const config = { mcpServers: { solobrowser: {
+        command: 'node', args: [mcpLauncher],
+        env: { SOLOBROWSER_REGISTRY: path.join(context.globalStorageUri.fsPath, 'instances'),
+          ...((vscode.workspace.workspaceFolders || [])[0] ? { SOLOBROWSER_WORKSPACE: vscode.workspace.workspaceFolders[0].uri.fsPath } : {}) }
+      } } };
+      await vscode.env.clipboard.writeText(JSON.stringify(config, null, 2));
+      vscode.window.showInformationMessage('SoloBrowser MCP configuration copied.');
     })
   );
 
@@ -227,6 +253,8 @@ function activate(context) {
 }
 
 async function deactivate() {
+  unpublishInstance?.();
+  backupControl?.cdp.close();
   if (server) {
     server.close();
     server = undefined;
@@ -264,40 +292,37 @@ function startServer(context) {
           ok: true,
           name: 'SoloBrowser',
           port: actualPort,
+          instanceId,
+          workspaces: (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath),
+          version: extensionContext.extension?.packageJSON?.version || require('../package.json').version,
           panelVisible: isBrowserSurfaceVisible(panel, sidebarView),
           current: currentState
         });
       }
 
-      const localPostRoutes = ['/open', '/snapshot', '/click', '/type', '/read', '/demo'];
+      if (pathname === '/capabilities' && req.method === 'GET') return sendJson(res, 200, { ok: true, tools: controlTools });
+      const localPostRoutes = controlTools.filter(tool => !['browser_instances', 'browser_select_instance'].includes(tool.name)).map(tool => `/${tool.name.slice(8)}`).concat('/demo', '/fill');
       if (localPostRoutes.includes(pathname)) {
+        if (req.headers.origin) return sendJson(res, 403, { ok: false, error: 'Browser-page requests cannot control SoloBrowser. Use the local agent or MCP client.' });
         if (req.method !== 'POST') {
           return sendJson(res, 405, { ok: false, error: 'Use POST for local browser actions.' });
         }
 
+        if (req.headers['x-solobrowser-instance'] && req.headers['x-solobrowser-instance'] !== instanceId) return sendJson(res, 409, { ok: false, error: 'SoloBrowser instance changed. Discover instances again.' });
         const body = await readJson(req);
+        const action = pathname.slice(1) === 'fill' ? 'type' : pathname.slice(1);
+        const tool = controlTools.find(tool => tool.name === `browser_${action}`);
+        try { if (tool) validateArguments(tool, body); }
+        catch (error) { return sendJson(res, 400, { ok: false, error: error.message }); }
         if (pathname === '/open') {
-          const result = await openBrowser(body.url || 'bmcp:demo');
+          const result = await serializeControl(() => openBrowser(body.url || 'bmcp:demo'));
           return sendJson(res, 200, { ok: true, result });
         }
-        if (pathname === '/snapshot') {
-          return sendJson(res, 200, { ok: true, snapshot: await browserAction('snapshot') });
-        }
-        if (pathname === '/click') {
-          return sendJson(res, 200, { ok: true, result: await browserAction('click', { ref: body.ref }) });
-        }
-        if (pathname === '/type') {
-          return sendJson(res, 200, {
-            ok: true,
-            result: await browserAction('type', { ref: body.ref, text: body.text || '' })
-          });
-        }
-        if (pathname === '/read') {
-          return sendJson(res, 200, { ok: true, result: await browserAction('read') });
-        }
         if (pathname === '/demo') {
-          return sendJson(res, 200, { ok: true, result: await runDemo() });
+          return sendJson(res, 200, { ok: true, result: await serializeControl(() => runDemo()) });
         }
+        const result = await serializeControl(() => browserAction(action, body));
+        return sendJson(res, 200, { ok: true, [action === 'snapshot' ? 'snapshot' : 'result']: result });
       }
 
       // 非本地 API 均走全流量代理，传入实际启动的 actualPort
@@ -311,6 +336,7 @@ function startServer(context) {
   function tryListen() {
     server.listen(currentPort, '127.0.0.1', () => {
       actualPort = currentPort;
+      unpublishInstance = publishInstance(path.join(context.globalStorageUri.fsPath, 'instances'), { instanceId, port: actualPort, pid: process.pid });
       serverReadyResolve?.();
       console.log(`SoloBrowser listening on http://127.0.0.1:${actualPort}`);
     });
@@ -328,7 +354,7 @@ function startServer(context) {
 
   tryListen();
 
-  context.subscriptions.push({ dispose: () => server?.close() });
+  context.subscriptions.push({ dispose: () => { unpublishInstance?.(); server?.close(); } });
 }
 
 function setupRuntimeSocketServer() {
@@ -423,6 +449,7 @@ async function openNativeSession(targetUrl, options = {}) {
   nativeResizeTimer = undefined;
   currentState = { mode: 'native', url: targetUrl };
   nativeRuntimePort = 0;
+  activePageCdp = undefined;
   activeFallbackAgentBrowserArgs = undefined;
   postNativeMessage({ type: 'nativeUrl', url: targetUrl });
   postNativeMessage({ type: 'nativeStatus', text: '正在打开', connected: false });
@@ -437,23 +464,8 @@ async function openNativeSession(targetUrl, options = {}) {
     });
     if (!isCurrentSession()) return currentState;
     nativeRuntimePort = Number(runtime.remoteDebuggingPort) || 0;
-    runtime.cdp.setNavigationListener((frame) => {
-      if (!isCurrentSession()) return;
-      if (currentState.mode !== 'native' || currentState.transport !== 'webrtc') return;
-      fallbackRequestGeneration++;
-      webviewConnections.invalidateActive();
-      if (frame?.url && !frame.url.startsWith('chrome-error://')) {
-        runtime.url = frame.url;
-        currentState = { ...currentState, url: frame.url };
-        postNativeMessage({ type: 'nativeUrl', url: frame.url });
-      }
-      clearTimeout(navigationRestartTimer);
-      navigationRestartTimer = setTimeout(() => {
-        if (!isCurrentSession()) return;
-        restartReadyWebviews();
-        syncNativeViewport(runtime, isCurrentSession).catch(() => {});
-      }, 120);
-    });
+    activePageCdp = runtime.cdp;
+    bindRuntimeNavigation(runtime, isCurrentSession);
     const viewport = await syncNativeViewport(runtime, isCurrentSession);
     if (!isCurrentSession()) return currentState;
     currentState = {
@@ -477,6 +489,28 @@ async function openNativeSession(targetUrl, options = {}) {
     }
   }
   return currentState;
+}
+
+function bindRuntimeNavigation(runtime, isCurrentSession = () => true) {
+  runtime.cdp.setNavigationListener((frame) => {
+      if (!isCurrentSession()) return;
+      if (currentState.mode !== 'native') return;
+      if (currentState.transport === 'webrtc') {
+        fallbackRequestGeneration++;
+        webviewConnections.invalidateActive();
+      }
+      if (frame?.url && !frame.url.startsWith('chrome-error://')) {
+        runtime.url = frame.url;
+        currentState = { ...currentState, url: frame.url };
+        postNativeMessage({ type: 'nativeUrl', url: frame.url });
+      }
+      clearTimeout(navigationRestartTimer);
+      navigationRestartTimer = setTimeout(() => {
+        if (!isCurrentSession()) return;
+        restartReadyWebviews();
+        syncNativeViewport(runtime, isCurrentSession).catch(() => {});
+      }, 120);
+    });
 }
 
 async function navigateNative(command) {
@@ -515,6 +549,7 @@ async function startFallbackStream(shouldBegin = () => true, shouldContinue = sh
           30000,
           attemptAgentBrowserArgs
         );
+        if (activePageCdp?.isOpen()) await alignFallbackTab(activePageCdp, attemptAgentBrowserArgs);
       } catch (error) {
         if (!shouldBegin()) return { started: false, state: currentState };
         throw error;
@@ -1012,49 +1047,82 @@ function requestWebview(action, payload = {}) {
 
 async function browserAction(action, payload = {}) {
   if (currentState.mode !== 'native') {
+    if (!['snapshot', 'read', 'click', 'type'].includes(action)) throw new Error('Open a web page before using this action.');
     return requestWebview(action, payload);
   }
-
-  if (currentState.transport === 'webrtc') {
+  let control;
+  if (nativeRuntimePort) {
     const runtime = await ensureTrackedBrowserRuntime({
       browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
       signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
-      storagePath: extensionContext.globalStorageUri.fsPath,
-      url: currentState.url
+      storagePath: extensionContext.globalStorageUri.fsPath
     });
-    if (action === 'snapshot' || action === 'read') {
-      const snapshot = await runtime.cdp.snapshot();
-      return action === 'read' ? { text: snapshot.text } : snapshot;
+    control = controls.get(runtime.cdp);
+    if (!control) {
+      control = new BrowserControl(runtime.cdp, async (next, selected) => {
+        await closeReadyBrowserSurfaces();
+        const wasFallback = currentState.transport === 'fallback';
+        if (wasFallback) {
+          closeNativeStream();
+        }
+        runtime.cdp = next;
+        activePageCdp = next;
+        runtime.url = selected.url;
+        controls.set(next, control);
+        currentState = { ...currentState, url: selected.url };
+        bindRuntimeNavigation(runtime);
+        postNativeMessage({ type: 'nativeUrl', url: selected.url });
+        await syncNativeViewport(runtime);
+        if (wasFallback) {
+          await alignFallbackTab(next);
+          startNativeStreamRelay(await ensureNativeStream(activeFallbackAgentBrowserArgs));
+        }
+        else restartReadyWebviews();
+      });
+      controls.set(runtime.cdp, control);
     }
-    if (action === 'click') {
-      return runtime.cdp.click(payload.ref);
+  } else {
+    const marker = `__soloDisplayed_${randomUUID().replaceAll('-', '')}`;
+    await runAgentBrowser(['eval', `window[${JSON.stringify(marker)}]=true`]);
+    let displayed;
+    try {
+      const endpoint = await runAgentBrowser(['get', 'cdp-url']);
+      const port = Number(new URL(endpoint).port);
+      displayed = await connectMarkedPage(port, marker, backupControl?.cdp);
+    } finally {
+      await runAgentBrowser(['eval', `delete window[${JSON.stringify(marker)}]`]).catch(() => {});
     }
-    if (action === 'type') {
-      return runtime.cdp.type(payload.ref, payload.text || '');
+    if (displayed !== backupControl?.cdp) {
+      backupControl?.cdp.close();
+      backupControl = new BrowserControl(displayed, async (next, selected) => {
+        closeNativeStream();
+        await alignFallbackTab(next);
+        currentState = { ...currentState, url: selected.url };
+        postNativeMessage({ type: 'nativeUrl', url: selected.url });
+        startNativeStreamRelay(await ensureNativeStream(activeFallbackAgentBrowserArgs));
+      });
     }
-    throw new Error(`Unsupported WebRTC browser action: ${action}`);
+    control = backupControl;
   }
+  return control.run(action, payload);
+}
 
-  if (action === 'snapshot') {
-    const raw = await runAgentBrowser(['snapshot', '-i'], 30000);
-    return parseAgentBrowserSnapshot(raw);
+async function alignFallbackTab(cdp, buildArgs = activeFallbackAgentBrowserArgs || createAgentBrowserArgs(currentAgentBrowserConnection())) {
+  // Match the actual target, including tabs with identical URLs and titles.
+  const marker = `__soloTab_${randomUUID().replaceAll('-', '')}`;
+  await cdp.send('Runtime.evaluate', { expression: `window[${JSON.stringify(marker)}]=true` });
+  try {
+    const matches = async () => (await runAgentBrowser(['eval', `Boolean(window[${JSON.stringify(marker)}])`], 10000, buildArgs)).trim() === 'true';
+    if (await matches()) return;
+    const result = JSON.parse(await runAgentBrowser(['tab', 'list', '--json'], 10000, buildArgs));
+    for (const tab of result.data?.tabs || []) {
+      await runAgentBrowser(['tab', tab.tabId], 10000, buildArgs);
+      if (await matches()) return;
+    }
+    throw new Error('The displayed browser tab is no longer available. Open the page again.');
+  } finally {
+    await cdp.send('Runtime.evaluate', { expression: `delete window[${JSON.stringify(marker)}]` }).catch(() => {});
   }
-  if (action === 'read') {
-    const raw = await runAgentBrowser(['snapshot', '-i'], 30000);
-    return { text: raw };
-  }
-  if (action === 'click') {
-    const ref = normalizeAgentBrowserRef(payload.ref);
-    const raw = await runAgentBrowser(['click', ref], 30000);
-    return { clicked: ref, raw };
-  }
-  if (action === 'type') {
-    const ref = normalizeAgentBrowserRef(payload.ref);
-    const raw = await runAgentBrowser(['fill', ref, payload.text || ''], 30000);
-    return { typed: ref, text: payload.text || '', raw };
-  }
-
-  throw new Error(`Unsupported native browser action: ${action}`);
 }
 
 function currentAgentBrowserConnection() {
@@ -1105,7 +1173,12 @@ function fallbackBootstrapArgs(targetUrl, options = {}) {
 
 async function ensureTrackedBrowserRuntime(options) {
   const requestGeneration = nativeSessionGeneration;
-  const runtime = await ensureBrowserRuntime(options);
+  const runtime = await ensureBrowserRuntime({
+    ...options,
+    // Capture/input reconnections must not navigate a tab that the user just selected.
+    url: activePageCdp?.isOpen() ? undefined : options.url || currentState.url
+  });
+  if (requestGeneration === nativeSessionGeneration) activePageCdp = runtime.cdp;
   nativeRuntimePort = refreshedRuntimePort(
     runtime,
     requestGeneration,

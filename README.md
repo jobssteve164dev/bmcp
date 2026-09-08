@@ -8,6 +8,10 @@ SoloBrowser is a real, visible browser for VS Code. Local AI agents such as Code
 
 SoloBrowser 为本地 AI 代理提供一个真正可见的 VS Code 浏览器。Codex、Claude Code、Cursor Agent、Gemini CLI 等工具可以浏览和操作网站，而用户始终能在编辑器里看到页面与每一步动作。
 
+Agents can connect using **SoloBrowser: Copy MCP Configuration**, or use the local HTTP API. See [control tools and connection instructions](docs/control-api.md).
+
+在命令面板运行 **SoloBrowser: Copy MCP Configuration** 即可复制本地 MCP 接入配置；也可直接使用 HTTP 控制接口。参见[控制工具与接入说明](docs/control-api.md)。
+
 ---
 
 ## English Version

@@ -59,6 +59,10 @@
       {
         "command": "bmcp.runDemo",
         "title": "SoloBrowser: Run Demo"
+      },
+      {
+        "command": "bmcp.copyMcpConfig",
+        "title": "SoloBrowser: Copy MCP Configuration"
       }
     ],
     "viewsContainers": {
@@ -96,12 +100,14 @@
     }
   },
   "scripts": {
-    "check": "node --check src/extension.js && node --check src/browserRuntime.js && node --check src/pageModel.js && node --check scripts/smoke-http.js",
-    "test": "node test/pageModel.test.js && node test/sidebarView.test.js && node test/browserRuntime.test.js",
+    "check": "node --check src/extension.js && node --check src/browserRuntime.js && node --check src/pageModel.js && node --check scripts/smoke-http.js && node --check src/control.js && node --check src/controlTools.js && node --check src/discovery.js && node --check scripts/mcp.js",
+    "test": "node test/pageModel.test.js && node test/sidebarView.test.js && node test/browserRuntime.test.js && node test/discovery.test.js && node test/mcp.test.js",
     "package": "vsce package --allow-star-activation",
     "publish:marketplace": "vsce publish --allow-star-activation -p $VSCE_PAT",
     "smoke:http": "node scripts/smoke-http.js",
-    "verify": "npm run check && npm test && npm run package"
+    "verify": "npm run check && npm test && npm run package",
+    "test:browser": "node test/control.test.js",
+    "mcp": "node scripts/mcp.js"
   },
   "devDependencies": {
     "@vscode/vsce": "^3.2.2",
