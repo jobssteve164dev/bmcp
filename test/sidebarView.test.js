@@ -72,6 +72,12 @@ const fourthConnection = registry.beginOffer(registryWebview, {
   clientId: 'client-1', documentId: 'document-next', connectionId: 'connection-4'
 });
 assert.deepStrictEqual(registry.takeCandidates(fourthConnection), [{ candidate: 'next-early' }]);
+assert.strictEqual(registry.matchActive(registryWebview, {
+  clientId: 'client-1', documentId: 'document-next', connectionId: 'connection-4'
+}), fourthConnection);
+assert.strictEqual(registry.matchActive(registryWebview, {
+  clientId: 'client-1', documentId: 'document-next', connectionId: 'connection-stale'
+}), undefined);
 registry.invalidateActive();
 assert.strictEqual(registry.isCurrent(fourthConnection), false);
 
@@ -229,6 +235,96 @@ FakeWebviewPeerConnection.instances = [];
   assert(offers[0].connectionId.startsWith('panel-1:'));
   assert.strictEqual(offers[0].documentId, restartMessages.find((message) => message.type === 'nativeReady').documentId);
   assert.strictEqual(typeof offers[0].offer.sdp, 'string');
+
+  const connectionTimers = [];
+  const { dom: timeoutDom, messages: timeoutMessages } = runWebview(panelHtml, (window) => {
+    window.RTCPeerConnection = FakeWebviewPeerConnection;
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (callback, delay, ...args) => {
+      if (delay === 3000) {
+        connectionTimers.push(() => callback(...args));
+        return connectionTimers.length;
+      }
+      return nativeSetTimeout(callback, delay, ...args);
+    };
+  });
+  timeoutDom.window.dispatchEvent(new timeoutDom.window.MessageEvent('message', {
+    data: { type: 'startWebRtc', clientId: 'panel-1' }
+  }));
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(connectionTimers.length, 1);
+  connectionTimers[0]();
+  const timeoutMessage = timeoutMessages.find((message) => message.type === 'webrtcTimeout');
+  assert(timeoutMessage);
+  assert.strictEqual(timeoutMessage.clientId, 'panel-1');
+  assert(timeoutMessage.connectionId.startsWith('panel-1:'));
+
+  const frameCallbacks = [];
+  const clearedTimers = [];
+  const reconnectTimers = [];
+  const { dom: reconnectDom } = runWebview(panelHtml, (window) => {
+    window.RTCPeerConnection = FakeWebviewPeerConnection;
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    const nativeClearTimeout = window.clearTimeout.bind(window);
+    window.setTimeout = (callback, delay, ...args) => {
+      if (delay === 3000) {
+        const id = 100 + reconnectTimers.length;
+        reconnectTimers.push({ callback: () => callback(...args), id });
+        return id;
+      }
+      return nativeSetTimeout(callback, delay, ...args);
+    };
+    window.clearTimeout = (id) => {
+      if (id >= 100) clearedTimers.push(id);
+      else nativeClearTimeout(id);
+    };
+  });
+  const reconnectVideo = reconnectDom.window.document.getElementById('stream');
+  reconnectVideo.requestVideoFrameCallback = (callback) => frameCallbacks.push(callback);
+  const reconnectMessage = new reconnectDom.window.MessageEvent('message', {
+    data: { type: 'startWebRtc', clientId: 'panel-1' }
+  });
+  reconnectDom.window.dispatchEvent(reconnectMessage);
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  const firstReconnectPeer = FakeWebviewPeerConnection.instances.at(-1);
+  firstReconnectPeer.ontrack({ streams: [{}] });
+  reconnectDom.window.dispatchEvent(reconnectMessage);
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(reconnectTimers.length, 2);
+  frameCallbacks[0]();
+  assert(!clearedTimers.includes(reconnectTimers[1].id));
+
+  const sidebarConnectionTimers = [];
+  const { dom: sidebarTimeoutDom, messages: sidebarTimeoutMessages } = runWebview(html, (window) => {
+    window.RTCPeerConnection = FakeWebviewPeerConnection;
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = (callback, delay, ...args) => {
+      if (delay === 3000) {
+        sidebarConnectionTimers.push(() => callback(...args));
+        return sidebarConnectionTimers.length;
+      }
+      return nativeSetTimeout(callback, delay, ...args);
+    };
+  });
+  const sidebarReady = sidebarTimeoutMessages.find((message) => message.type === 'nativeReady');
+  sidebarTimeoutDom.window.dispatchEvent(new sidebarTimeoutDom.window.MessageEvent('message', {
+    data: { type: 'startWebRtc', clientId: sidebarReady.clientId }
+  }));
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(sidebarConnectionTimers.length, 1);
+  sidebarConnectionTimers[0]();
+  const sidebarTimeout = sidebarTimeoutMessages.find((message) => message.type === 'webrtcTimeout');
+  assert(sidebarTimeout);
+  assert.strictEqual(sidebarTimeout.clientId, sidebarReady.clientId);
+  assert.strictEqual(sidebarTimeout.documentId, sidebarReady.documentId);
   console.log('sidebarView.test OK');
 })().catch((error) => {
   console.error(error);

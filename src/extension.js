@@ -139,6 +139,16 @@ function createWebviewConnectionRegistry() {
     return record.candidates.splice(0);
   }
 
+  function matchActive(webview, message) {
+    const record = active.get(webview);
+    return record
+      && record.clientId === String(message?.clientId || '')
+      && record.documentId === String(message?.documentId || '')
+      && record.connectionId === String(message?.connectionId || '')
+      ? record
+      : undefined;
+  }
+
   function invalidate(webview) {
     const readyRecord = ready.get(webview);
     ready.delete(webview);
@@ -180,6 +190,7 @@ function createWebviewConnectionRegistry() {
     invalidateActive,
     isCurrent,
     markReady,
+    matchActive,
     pendingStarts,
     queueCandidate,
     setStart,
@@ -543,7 +554,7 @@ function ensurePanel() {
       await markWebviewReady(panel.webview, message.clientId || panelClientId, message.documentId);
       return;
     }
-    if (message?.type === 'webrtcOffer' || message?.type === 'webrtcCandidate') {
+    if (message?.type === 'webrtcOffer' || message?.type === 'webrtcCandidate' || message?.type === 'webrtcTimeout') {
       sendRuntimeMessage(message, panel.webview);
       return;
     }
@@ -839,11 +850,47 @@ function sendRuntimeMessage(message, sourceWebview) {
     if (connection?.connectionId) flushPageWebRtcCandidates(connection).catch(() => {});
     return;
   }
+  if (message?.type === 'webrtcTimeout' && currentState.transport === 'webrtc') {
+    const connection = webviewConnections.matchActive(sourceWebview, message);
+    if (connection) fallbackFromWebRtcFailure(connection, 'WebRTC connection timed out.');
+    return;
+  }
   if (!runtimeSocket || runtimeSocket.readyState !== WebSocket.OPEN) {
     postNativeMessage({ type: 'nativeStatus', text: '正在等待浏览器连接', connected: false });
     return;
   }
   runtimeSocket.send(JSON.stringify(message));
+}
+
+function fallbackFromWebRtcFailure(connection, error) {
+  if (!webviewConnections.isCurrent(connection) || currentState.transport !== 'webrtc') return;
+  connection.webview?.postMessage({
+    type: 'webrtcFailed',
+    clientId: connection.clientId,
+    connectionId: connection.connectionId,
+    error
+  });
+  const shouldBeginFallback = () => (
+    webviewConnections.isCurrent(connection)
+    && currentState.transport === 'webrtc'
+    && connection.fallbackGeneration === fallbackRequestGeneration
+  );
+  const shouldContinueFallback = () => (
+    currentState.mode === 'native'
+    && currentState.transport === 'webrtc'
+    && connection.fallbackGeneration === fallbackRequestGeneration
+  );
+  startFallbackStream(shouldBeginFallback, shouldContinueFallback)
+    .catch((fallbackError) => {
+      if (!shouldBeginFallback() && !shouldContinueFallback()) return;
+      connection.webview?.postMessage({
+        type: 'nativeStatus',
+        clientId: connection.clientId,
+        connectionId: connection.connectionId,
+        text: `SoloBrowser WebRTC failed: ${error}; fallback failed: ${fallbackError.message}`,
+        connected: false
+      });
+    });
 }
 
 async function closeReadyBrowserSurfaces() {
@@ -1178,6 +1225,7 @@ function getNativeHtml(state, clientId = randomUUID()) {
     let peer;
     let activeConnectionId = '';
     let connectionEpoch = 0;
+    let connectionTimer;
     let pendingRemoteCandidates = [];
 
     function setStatus(text, connected) {
@@ -1236,6 +1284,7 @@ function getNativeHtml(state, clientId = randomUUID()) {
         else pendingRemoteCandidates.push(message.candidate);
       }
       if (message.type === 'webrtcFailed' && (!message.connectionId || message.connectionId === activeConnectionId)) {
+        clearTimeout(connectionTimer);
         stream.classList.add('hidden');
         frame.classList.remove('hidden');
       }
@@ -1249,9 +1298,11 @@ function getNativeHtml(state, clientId = randomUUID()) {
     });
 
     async function startWebRtc() {
+      clearTimeout(connectionTimer);
       if (peer) peer.close();
       const connectionId = clientId + ':' + documentId + ':' + (++connectionEpoch);
       const nextPeer = new RTCPeerConnection({ iceServers: [] });
+      let nextConnectionTimer;
       peer = nextPeer;
       activeConnectionId = connectionId;
       pendingRemoteCandidates = [];
@@ -1259,6 +1310,19 @@ function getNativeHtml(state, clientId = randomUUID()) {
         if (peer !== nextPeer) return;
         stream.srcObject = event.streams[0];
         stream.play().catch(() => {});
+        if (typeof stream.requestVideoFrameCallback === 'function') {
+          stream.requestVideoFrameCallback(() => {
+            if (peer !== nextPeer || activeConnectionId !== connectionId) return;
+            clearTimeout(nextConnectionTimer);
+            if (connectionTimer === nextConnectionTimer) connectionTimer = undefined;
+          });
+        } else {
+          stream.addEventListener('loadeddata', () => {
+            if (peer !== nextPeer || activeConnectionId !== connectionId) return;
+            clearTimeout(nextConnectionTimer);
+            if (connectionTimer === nextConnectionTimer) connectionTimer = undefined;
+          }, { once: true });
+        }
         stream.classList.remove('hidden');
         frame.classList.add('hidden');
         empty.classList.add('hidden');
@@ -1283,6 +1347,11 @@ function getNativeHtml(state, clientId = randomUUID()) {
         ? localDescription.toJSON()
         : { type: localDescription?.type, sdp: localDescription?.sdp };
       vscode.postMessage({ type: 'webrtcOffer', clientId, documentId, connectionId, offer: serializableOffer });
+      nextConnectionTimer = setTimeout(() => {
+        if (peer !== nextPeer || activeConnectionId !== connectionId) return;
+        vscode.postMessage({ type: 'webrtcTimeout', clientId, documentId, connectionId });
+      }, 3000);
+      connectionTimer = nextConnectionTimer;
     }
 
     function toBrowserPoint(event) {
@@ -1758,7 +1827,7 @@ class BmcpWebviewViewProvider {
           sendNativeInput(message.input);
           return;
         }
-        if (message?.type === 'webrtcOffer' || message?.type === 'webrtcCandidate') {
+        if (message?.type === 'webrtcOffer' || message?.type === 'webrtcCandidate' || message?.type === 'webrtcTimeout') {
           sendRuntimeMessage(message, webviewView.webview);
           return;
         }
@@ -2027,6 +2096,7 @@ class BmcpWebviewViewProvider {
     let peer;
     let activeConnectionId = '';
     let connectionEpoch = 0;
+    let connectionTimer;
     let pendingRemoteCandidates = [];
     let pendingUrl = '';
 
@@ -2172,6 +2242,7 @@ class BmcpWebviewViewProvider {
         else pendingRemoteCandidates.push(message.candidate);
       }
       if (message.type === 'webrtcFailed' && (!message.connectionId || message.connectionId === activeConnectionId)) {
+        clearTimeout(connectionTimer);
         stream.classList.add('hidden');
         frame.classList.remove('hidden');
       }
@@ -2185,9 +2256,11 @@ class BmcpWebviewViewProvider {
     });
 
     async function startWebRtc() {
+      clearTimeout(connectionTimer);
       if (peer) peer.close();
       const connectionId = clientId + ':' + documentId + ':' + (++connectionEpoch);
       const nextPeer = new RTCPeerConnection({ iceServers: [] });
+      let nextConnectionTimer;
       peer = nextPeer;
       activeConnectionId = connectionId;
       pendingRemoteCandidates = [];
@@ -2195,6 +2268,19 @@ class BmcpWebviewViewProvider {
         if (peer !== nextPeer) return;
         stream.srcObject = event.streams[0];
         stream.play().catch(() => {});
+        if (typeof stream.requestVideoFrameCallback === 'function') {
+          stream.requestVideoFrameCallback(() => {
+            if (peer !== nextPeer || activeConnectionId !== connectionId) return;
+            clearTimeout(nextConnectionTimer);
+            if (connectionTimer === nextConnectionTimer) connectionTimer = undefined;
+          });
+        } else {
+          stream.addEventListener('loadeddata', () => {
+            if (peer !== nextPeer || activeConnectionId !== connectionId) return;
+            clearTimeout(nextConnectionTimer);
+            if (connectionTimer === nextConnectionTimer) connectionTimer = undefined;
+          }, { once: true });
+        }
         stream.classList.remove('hidden');
         frame.classList.add('hidden');
         empty.classList.add('hidden');
@@ -2219,6 +2305,11 @@ class BmcpWebviewViewProvider {
         ? localDescription.toJSON()
         : { type: localDescription?.type, sdp: localDescription?.sdp };
       vscode.postMessage({ type: 'webrtcOffer', clientId, documentId, connectionId, offer: serializableOffer });
+      nextConnectionTimer = setTimeout(() => {
+        if (peer !== nextPeer || activeConnectionId !== connectionId) return;
+        vscode.postMessage({ type: 'webrtcTimeout', clientId, documentId, connectionId });
+      }, 3000);
+      connectionTimer = nextConnectionTimer;
     }
 
     new ResizeObserver(scheduleViewportSize).observe(viewport);
