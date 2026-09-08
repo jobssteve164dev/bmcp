@@ -1,5 +1,6 @@
 const assert = require('assert');
 const Module = require('module');
+const path = require('path');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
 const originalLoad = Module._load;
@@ -18,6 +19,12 @@ Module._load = function load(request, parent, isMain) {
 };
 
 const { __test } = require('../src/extension');
+
+assert.strictEqual(typeof __test.resolveFallbackProfilePath, 'function');
+assert.strictEqual(
+  __test.resolveFallbackProfilePath('/persistent/storage'),
+  path.join('/persistent/storage', 'fallback-profile')
+);
 
 const provider = new __test.BmcpWebviewViewProvider({ scheme: 'test', path: '/extension' });
 const html = provider._getHtmlForWebview();

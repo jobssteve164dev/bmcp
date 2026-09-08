@@ -1,5 +1,6 @@
 const http = require('http');
 const https = require('https');
+const path = require('path');
 const url = require('url');
 const { randomUUID } = require('crypto');
 const { execFile } = require('child_process');
@@ -1053,9 +1054,13 @@ async function browserAction(action, payload = {}) {
 
 function currentAgentBrowserConnection() {
   return {
-    fallbackProfilePath: path.join(extensionContext.globalStorageUri.fsPath, 'fallback-profile'),
+    fallbackProfilePath: resolveFallbackProfilePath(extensionContext.globalStorageUri.fsPath),
     runtimePort: nativeRuntimePort
   };
+}
+
+function resolveFallbackProfilePath(storagePath) {
+  return path.join(storagePath, 'fallback-profile');
 }
 
 function runAgentBrowser(
@@ -2385,6 +2390,7 @@ module.exports = {
     normalizeViewportSize,
     normalizeTarget,
     normalizeUrlInput,
+    resolveFallbackProfilePath,
     refreshedRuntimePort
   }
 };
