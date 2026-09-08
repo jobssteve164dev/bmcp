@@ -43,6 +43,14 @@ assert.deepStrictEqual(__test.agentBrowserArgs(['open', 'https://x.com'], {
   '--session', 'bmcp-native', '--profile', '/persistent/fallback', 'open', 'https://x.com'
 ]);
 assert.strictEqual(typeof __test.createAgentBrowserArgs, 'function');
+assert.deepStrictEqual(
+  __test.fallbackBootstrapArgs('https://x.com', { runtimePort: 17433 }),
+  ['get', 'url']
+);
+assert.deepStrictEqual(
+  __test.fallbackBootstrapArgs('https://x.com', { runtimePort: 0 }),
+  ['open', 'https://x.com']
+);
 const mutableConnection = { fallbackProfilePath: '/persistent/fallback', runtimePort: 17433 };
 const frozenAgentBrowserArgs = __test.createAgentBrowserArgs(mutableConnection);
 mutableConnection.runtimePort = 0;

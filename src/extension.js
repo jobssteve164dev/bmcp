@@ -505,11 +505,16 @@ async function startFallbackStream(shouldBegin = () => true, shouldContinue = sh
       continue;
     }
     const fallbackUrl = currentState.url;
-    const attemptAgentBrowserArgs = createAgentBrowserArgs(currentAgentBrowserConnection());
+    const fallbackConnection = currentAgentBrowserConnection();
+    const attemptAgentBrowserArgs = createAgentBrowserArgs(fallbackConnection);
     const attempt = (async () => {
       if (!shouldBegin()) return { started: false, state: currentState };
       try {
-        await runAgentBrowser(['open', fallbackUrl], 30000, attemptAgentBrowserArgs);
+        await runAgentBrowser(
+          fallbackBootstrapArgs(fallbackUrl, fallbackConnection),
+          30000,
+          attemptAgentBrowserArgs
+        );
       } catch (error) {
         if (!shouldBegin()) return { started: false, state: currentState };
         throw error;
@@ -1092,6 +1097,10 @@ function createAgentBrowserArgs(options = {}) {
   const fallbackProfilePath = String(options.fallbackProfilePath || '');
   const runtimePort = Number(options.runtimePort) || 0;
   return (args) => agentBrowserArgs(args, { fallbackProfilePath, runtimePort });
+}
+
+function fallbackBootstrapArgs(targetUrl, options = {}) {
+  return Number(options.runtimePort) > 0 ? ['get', 'url'] : ['open', targetUrl];
 }
 
 async function ensureTrackedBrowserRuntime(options) {
@@ -2385,6 +2394,7 @@ module.exports = {
     agentBrowserArgs,
     createAgentBrowserArgs,
     createWebviewConnectionRegistry,
+    fallbackBootstrapArgs,
     getNativeHtml,
     isBrowserSurfaceVisible,
     normalizeViewportSize,
