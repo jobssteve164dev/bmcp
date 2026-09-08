@@ -33,6 +33,8 @@ let server;
 let nativeSocket;
 let nativeResizeTimer;
 let nativeViewport = { width: 1280, height: 720 };
+let nativeRuntimePort = 0;
+let activeFallbackAgentBrowserArgs;
 let nativeInputQueue = Promise.resolve();
 let fallbackStreamPromise;
 let fallbackTransitioning = false;
@@ -419,6 +421,8 @@ async function openNativeSession(targetUrl, options = {}) {
   clearTimeout(nativeResizeTimer);
   nativeResizeTimer = undefined;
   currentState = { mode: 'native', url: targetUrl };
+  nativeRuntimePort = 0;
+  activeFallbackAgentBrowserArgs = undefined;
   postNativeMessage({ type: 'nativeUrl', url: targetUrl });
   postNativeMessage({ type: 'nativeStatus', text: '正在打开', connected: false });
   await serverReady;
@@ -431,6 +435,7 @@ async function openNativeSession(targetUrl, options = {}) {
       url: targetUrl
     });
     if (!isCurrentSession()) return currentState;
+    nativeRuntimePort = Number(runtime.remoteDebuggingPort) || 0;
     runtime.cdp.setNavigationListener((frame) => {
       if (!isCurrentSession()) return;
       if (currentState.mode !== 'native' || currentState.transport !== 'webrtc') return;
@@ -479,7 +484,7 @@ async function navigateNative(command) {
   }
   postNativeMessage({ type: 'nativeStatus', text: '正在更新', connected: Boolean(nativeSocket) });
   if (currentState.transport === 'webrtc') {
-    const runtime = await ensureBrowserRuntime({
+    const runtime = await ensureTrackedBrowserRuntime({
       browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
       signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
       storagePath: extensionContext.globalStorageUri.fsPath,
@@ -499,10 +504,11 @@ async function startFallbackStream(shouldBegin = () => true, shouldContinue = sh
       continue;
     }
     const fallbackUrl = currentState.url;
+    const attemptAgentBrowserArgs = createAgentBrowserArgs(currentAgentBrowserConnection());
     const attempt = (async () => {
       if (!shouldBegin()) return { started: false, state: currentState };
       try {
-        await runAgentBrowser(['open', fallbackUrl], 30000);
+        await runAgentBrowser(['open', fallbackUrl], 30000, attemptAgentBrowserArgs);
       } catch (error) {
         if (!shouldBegin()) return { started: false, state: currentState };
         throw error;
@@ -514,12 +520,13 @@ async function startFallbackStream(shouldBegin = () => true, shouldContinue = sh
         if (!shouldContinue()) return { started: false, state: currentState };
         let streamUrl;
         try {
-          streamUrl = await ensureNativeStream();
+          streamUrl = await ensureNativeStream(attemptAgentBrowserArgs);
         } catch (error) {
           if (!shouldContinue()) return { started: false, state: currentState };
           throw error;
         }
         if (!shouldContinue()) return { started: false, state: currentState };
+        activeFallbackAgentBrowserArgs = attemptAgentBrowserArgs;
         currentState = { ...currentState, transport: 'fallback', streamUrl };
         startNativeStreamRelay(streamUrl);
         return { started: true, state: currentState };
@@ -629,7 +636,7 @@ function startNativeStreamRelay(streamUrl) {
 function sendNativeInput(input) {
   if (!input) return;
   if (currentState.transport === 'webrtc') {
-    ensureBrowserRuntime({
+    ensureTrackedBrowserRuntime({
       browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
       signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
       storagePath: extensionContext.globalStorageUri.fsPath,
@@ -905,7 +912,7 @@ async function closeReadyBrowserSurfaces() {
 }
 
 async function startPageWebRtc(offer, connection) {
-  const runtime = await ensureBrowserRuntime({
+  const runtime = await ensureTrackedBrowserRuntime({
     browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
     signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
     storagePath: extensionContext.globalStorageUri.fsPath,
@@ -969,7 +976,7 @@ async function syncNativeViewport(runtime, shouldApply = () => true) {
 }
 
 async function addPageWebRtcCandidate(candidate, connectionId) {
-  const runtime = await ensureBrowserRuntime({
+  const runtime = await ensureTrackedBrowserRuntime({
     browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
     signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
     storagePath: extensionContext.globalStorageUri.fsPath,
@@ -1003,7 +1010,7 @@ async function browserAction(action, payload = {}) {
   }
 
   if (currentState.transport === 'webrtc') {
-    const runtime = await ensureBrowserRuntime({
+    const runtime = await ensureTrackedBrowserRuntime({
       browserPath: vscode.workspace.getConfiguration('bmcp').get('browserPath', ''),
       signalingUrl: `ws://127.0.0.1:${actualPort}/runtime`,
       storagePath: extensionContext.globalStorageUri.fsPath,
@@ -1044,9 +1051,20 @@ async function browserAction(action, payload = {}) {
   throw new Error(`Unsupported native browser action: ${action}`);
 }
 
-function runAgentBrowser(args, timeout = 15000) {
+function currentAgentBrowserConnection() {
+  return {
+    fallbackProfilePath: path.join(extensionContext.globalStorageUri.fsPath, 'fallback-profile'),
+    runtimePort: nativeRuntimePort
+  };
+}
+
+function runAgentBrowser(
+  args,
+  timeout = 15000,
+  buildArgs = activeFallbackAgentBrowserArgs || createAgentBrowserArgs(currentAgentBrowserConnection())
+) {
   return new Promise((resolve, reject) => {
-    execFile('agent-browser', ['--session-name', NATIVE_SESSION, ...args], { timeout }, (error, stdout, stderr) => {
+    execFile('agent-browser', buildArgs(args), { timeout }, (error, stdout, stderr) => {
       if (error) {
         const detail = [stderr, stdout].filter(Boolean).join('\n').trim();
         reject(new Error(detail || error.message));
@@ -1057,21 +1075,53 @@ function runAgentBrowser(args, timeout = 15000) {
   });
 }
 
-async function ensureNativeStream() {
+function agentBrowserArgs(args, options = {}) {
+  const runtimePort = Number(options.runtimePort) || 0;
+  const connection = runtimePort
+    ? ['--cdp', String(runtimePort)]
+    : ['--profile', String(options.fallbackProfilePath || '')];
+  return ['--session', NATIVE_SESSION, ...connection, ...args];
+}
+
+function createAgentBrowserArgs(options = {}) {
+  const fallbackProfilePath = String(options.fallbackProfilePath || '');
+  const runtimePort = Number(options.runtimePort) || 0;
+  return (args) => agentBrowserArgs(args, { fallbackProfilePath, runtimePort });
+}
+
+async function ensureTrackedBrowserRuntime(options) {
+  const requestGeneration = nativeSessionGeneration;
+  const runtime = await ensureBrowserRuntime(options);
+  nativeRuntimePort = refreshedRuntimePort(
+    runtime,
+    requestGeneration,
+    nativeSessionGeneration,
+    nativeRuntimePort
+  );
+  return runtime;
+}
+
+function refreshedRuntimePort(runtime, requestGeneration, currentGeneration, currentPort) {
+  return requestGeneration === currentGeneration
+    ? Number(runtime?.remoteDebuggingPort) || 0
+    : Number(currentPort) || 0;
+}
+
+async function ensureNativeStream(buildArgs) {
   let output = '';
   try {
-    output = await runAgentBrowser(['stream', 'status'], 10000);
+    output = await runAgentBrowser(['stream', 'status'], 10000, buildArgs);
   } catch (_) {
-    output = await runAgentBrowser(['stream', 'enable'], 10000);
+    output = await runAgentBrowser(['stream', 'enable'], 10000, buildArgs);
   }
 
   let streamUrl = extractStreamUrl(output);
   if (!streamUrl) {
-    output = await runAgentBrowser(['stream', 'enable'], 10000);
+    output = await runAgentBrowser(['stream', 'enable'], 10000, buildArgs);
     streamUrl = extractStreamUrl(output);
   }
   if (!streamUrl) {
-    output = await runAgentBrowser(['stream', 'status'], 10000);
+    output = await runAgentBrowser(['stream', 'status'], 10000, buildArgs);
     streamUrl = extractStreamUrl(output);
   }
   if (!streamUrl) {
@@ -2327,11 +2377,14 @@ module.exports = {
   deactivate,
   __test: {
     BmcpWebviewViewProvider,
+    agentBrowserArgs,
+    createAgentBrowserArgs,
     createWebviewConnectionRegistry,
     getNativeHtml,
     isBrowserSurfaceVisible,
     normalizeViewportSize,
     normalizeTarget,
-    normalizeUrlInput
+    normalizeUrlInput,
+    refreshedRuntimePort
   }
 };

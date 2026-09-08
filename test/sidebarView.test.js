@@ -22,6 +22,30 @@ const { __test } = require('../src/extension');
 const provider = new __test.BmcpWebviewViewProvider({ scheme: 'test', path: '/extension' });
 const html = provider._getHtmlForWebview();
 
+assert.strictEqual(typeof __test.agentBrowserArgs, 'function');
+assert.deepStrictEqual(__test.agentBrowserArgs(['open', 'https://x.com'], {
+  fallbackProfilePath: '/persistent/fallback',
+  runtimePort: 17433
+}), [
+  '--session', 'bmcp-native', '--cdp', '17433', 'open', 'https://x.com'
+]);
+assert.deepStrictEqual(__test.agentBrowserArgs(['open', 'https://x.com'], {
+  fallbackProfilePath: '/persistent/fallback',
+  runtimePort: 0
+}), [
+  '--session', 'bmcp-native', '--profile', '/persistent/fallback', 'open', 'https://x.com'
+]);
+assert.strictEqual(typeof __test.createAgentBrowserArgs, 'function');
+const mutableConnection = { fallbackProfilePath: '/persistent/fallback', runtimePort: 17433 };
+const frozenAgentBrowserArgs = __test.createAgentBrowserArgs(mutableConnection);
+mutableConnection.runtimePort = 0;
+assert.deepStrictEqual(frozenAgentBrowserArgs(['stream', 'status']), [
+  '--session', 'bmcp-native', '--cdp', '17433', 'stream', 'status'
+]);
+assert.strictEqual(typeof __test.refreshedRuntimePort, 'function');
+assert.strictEqual(__test.refreshedRuntimePort({ remoteDebuggingPort: 17434 }, 4, 4, 17433), 17434);
+assert.strictEqual(__test.refreshedRuntimePort({ remoteDebuggingPort: 17434 }, 3, 4, 0), 0);
+
 assert.strictEqual(__test.normalizeUrlInput('youtube.com'), 'https://youtube.com');
 assert.strictEqual(__test.normalizeTarget('youtube.com').url, 'https://youtube.com');
 assert(html.includes("vscode.postMessage({ type: 'openNative'"));
